@@ -1,0 +1,8 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Zero-trust: browsers/mobile clients can NEVER read or write Firestore directly.
+    // Only the backend (Admin SDK, least-privilege service accounts) touches data.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,0 +1,16 @@
+# BRD → implementation map
+| ID | Where |
+|---|---|
+| FR-01 | `backend/src/server.js` auth(), Firebase Auth in `frontend/src/firebase.js` |
+| FR-02 | custom claim set in `/api/account/init`, `scripts/set-admin.js`, `requireRole` |
+| FR-03 | `shared/ledger.js` transfer() |
+| FR-04 | `Idempotency-Key` + `idempotency/` collection in ledger.js |
+| FR-05 | `/api/transfer` → publish → 200 |
+| FR-06 | functions/index.js: notifyFunction, auditFunction, statementFunction (independent subscribers/topics) |
+| FR-07 | Cloud Scheduler jobs (scripts/03) → topic `scheduled-jobs` → scheduledFunction |
+| FR-08 | statementFunction → private bucket; `/api/statements/:id/download` signed URL |
+| FR-09 | BigQuery `cloudbank_audit.transactions_audit` → Looker Studio (README §4) |
+| NFR scale 0→N | Cloud Run `--min-instances 0 --max-instances 10`; functions `--min-instances 0 --max-instances 5` |
+| NFR secrets | Secret Manager `notify-webhook-url` |
+| NFR IAM | 5 service accounts in scripts/01-setup-gcp.sh |
+| NFR deployment | `gcloud builds submit` + `gcloud run deploy` in scripts/02 |
