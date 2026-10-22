@@ -63,5 +63,14 @@ body{background:#f5f7fb;color:#182c3d}
 .dashboard-welcome p{max-width:450px;margin:0 auto 20px;line-height:1.6}
 .dashboard-alert{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 14px}
 .dashboard-alert .btn{padding:8px 13px;font-size:13px}
+.report-card{display:flex;align-items:center;justify-content:space-between;gap:20px;border-left:4px solid #28649d}
+.report-card h2{margin:8px 0 5px;color:#173754;font-size:22px}
+.report-card p{margin:0;line-height:1.6}
+.report-link{display:inline-flex;align-items:center;gap:10px;text-decoration:none;white-space:nowrap}
+.report-setup{max-width:470px;padding:12px 14px;border-radius:8px;background:#f1f5fa;color:#607080;font-size:13px}
+.report-setup code{font-size:12px;color:#274e78}
+.admin-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.admin-title h3{margin:0}
+.table-scroll{overflow-x:auto}
 @media(max-width:800px){.landing-main{grid-template-columns:1fr;gap:25px;max-width:590px;margin-top:12px}.hero-copy{padding:8px 0}.hero-copy h1{font-size:44px}.hero-points{grid-template-columns:1fr 1fr;gap:16px}.hero-points>div{align-items:flex-start}.landing-footer{padding-left:28px}.auth-card{max-width:none}}
-@media(max-width:520px){.landing-nav{height:64px;padding:0 18px}.landing-nav-note{font-size:12px}.landing-main{padding:16px 18px 28px;gap:20px}.hero-copy h1{font-size:38px}.hero-description{font-size:15px}.hero-points{grid-template-columns:1fr;margin:23px 0}.auth-card{padding:25px 21px}.dashboard-main{padding-top:18px}.dashboard-heading{align-items:flex-start;flex-direction:column}.dashboard-heading h1{font-size:26px}.balance-symbol{width:46px;height:46px}.landing-footer{padding:15px 18px}.dashboard-alert{align-items:flex-start;flex-direction:column}}
+@media(max-width:520px){.landing-nav{height:64px;padding:0 18px}.landing-nav-note{font-size:12px}.landing-main{padding:16px 18px 28px;gap:20px}.hero-copy h1{font-size:38px}.hero-description{font-size:15px}.hero-points{grid-template-columns:1fr;margin:23px 0}.auth-card{padding:25px 21px}.dashboard-main{padding-top:18px}.dashboard-heading{align-items:flex-start;flex-direction:column}.dashboard-heading h1{font-size:26px}.balance-symbol{width:46px;height:46px}.landing-footer{padding:15px 18px}.dashboard-alert{align-items:flex-start;flex-direction:column}.report-card{align-items:flex-start;flex-direction:column}.admin-title{align-items:flex-start}}

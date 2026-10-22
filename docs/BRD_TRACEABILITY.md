@@ -9,7 +9,7 @@
 | FR-06 | functions/index.js: notifyFunction, auditFunction, statementFunction (independent subscribers/topics) |
 | FR-07 | Cloud Scheduler jobs (scripts/03) → topic `scheduled-jobs` → scheduledFunction |
 | FR-08 | statementFunction → private bucket; `/api/statements/:id/download` signed URL |
-| FR-09 | BigQuery `cloudbank_audit.transactions_audit` → Looker Studio (README §4) |
+| FR-09 | BigQuery `cloudbank_audit.transactions_audit` → Looker Studio (README §4); admin UI link configured with `VITE_LOOKER_STUDIO_URL` |
 | NFR scale 0→N | Cloud Run `--min-instances 0 --max-instances 10`; functions `--min-instances 0 --max-instances 5` |
 | NFR secrets | Secret Manager `notify-webhook-url` |
 | NFR IAM | 5 service accounts in scripts/01-setup-gcp.sh |

@@ -111,11 +111,33 @@ function Standing({ list, reload }) {
 }
 
 function Admin() {
-  const [s, setS] = useState(null)
-  useEffect(() => { api('/admin/stats').then(setS).catch(() => {}) }, [])
-  return (<div className="card"><h3>Admin overview</h3>{s ? (<><p><b>{s.accounts}</b> accounts · <b>{s.transactions}</b> transactions</p>
-    <table><tbody>{s.recent.map((t) => (<tr key={t.txId}><td>{when(t.createdAt)}</td><td>{t.type}</td><td>{t.from} → {t.to}</td><td>{inr(t.amount)}</td></tr>))}</tbody></table>
-    <p className="muted">Full analytics: open the Looker Studio dashboard connected to BigQuery (see README).</p></>) : 'Loading…'}</div>)
+  const [stats, setStats] = useState(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
+  const refresh = useCallback(async () => {
+    setLoading(true); setError('')
+    try { setStats(await api('/admin/stats')) }
+    catch (err) { setError(err.message) }
+    finally { setLoading(false) }
+  }, [])
+  useEffect(() => { refresh() }, [refresh])
+  const dashboardUrl = import.meta.env.VITE_LOOKER_STUDIO_URL?.trim()
+  const safeDashboardUrl = dashboardUrl?.startsWith('https://') ? dashboardUrl : ''
+  return (<>
+    <section className="card report-card"><div><span className="eyebrow">ADMINISTRATOR</span><h2>Audit and reporting</h2>
+      <p className="muted">Explore transaction audit data streamed to BigQuery.</p></div>
+      {safeDashboardUrl ? <a className="btn report-link" href={safeDashboardUrl} target="_blank" rel="noopener noreferrer">Open Looker Studio <span aria-hidden="true">↗</span></a>
+        : <p className="report-setup">Dashboard link not configured. Create a Looker Studio report connected to <b>cloudbank_audit.transactions_audit</b>, then set <code>VITE_LOOKER_STUDIO_URL</code> in <code>frontend/.env</code> and rebuild.</p>}
+    </section>
+    <section className="card"><div className="admin-title"><h3>Platform overview</h3><button className="btn" onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button></div>
+      {error && <div className="bad" role="alert">{error}</div>}
+      {loading && !stats ? <p className="muted">Loading platform metrics…</p> : stats && <>
+        <p><b>{stats.accounts}</b> accounts · <b>{stats.transactions}</b> transactions</p>
+        <div className="table-scroll"><table><thead><tr><th>Date</th><th>Type</th><th>From → To</th><th>Amount</th></tr></thead><tbody>
+          {stats.recent.map((t) => (<tr key={t.txId}><td>{when(t.createdAt)}</td><td>{t.type}</td><td>{t.from} → {t.to}</td><td>{inr(t.amount)}</td></tr>))}
+          {!stats.recent.length && <tr><td colSpan="4" className="muted">No transactions yet</td></tr>}
+        </tbody></table></div>
+      </>}
+    </section>
+  </>)
 }
 
 function Dashboard({ user }) {

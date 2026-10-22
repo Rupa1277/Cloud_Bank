@@ -58,6 +58,7 @@ Your app is at **https://<project-id>.web.app**.
 ## 4. Looker Studio dashboard (FR-09)
 lookerstudio.google.com → *Create → Report → BigQuery* → project → `cloudbank_audit` → `transactions_audit` → Add.
 Suggested charts: scorecard (record count), time series (`occurred_at`, metric `amount_paise`), pie (`type`), table (latest transactions). Share the report with your examiner.
+Copy the report's shareable URL into `VITE_LOOKER_STUDIO_URL` in `frontend/.env`, then rebuild and redeploy the frontend (`./scripts/04-deploy-frontend.sh`). Administrators can open the report from the **Admin** tab. If this value is unset, the Admin tab explains how to configure it.
 
 ## 5. Show autoscaling (0 → N → 0)
 From your laptop (PowerShell, Docker installed). Use a signed-up test user and your Firebase web **API key**:
