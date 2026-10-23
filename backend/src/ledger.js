@@ -1,5 +1,6 @@
 // Core ledger logic. ALL money is stored as integer paise (1 INR = 100 paise): no floating-point errors.
 // Used by the Cloud Run API and by the scheduled (recurring payment) Cloud Function.
+const crypto = require('crypto');
 const { FieldValue } = require('firebase-admin/firestore');
 const MAX_AMOUNT = 10000000; // INR 1,00,000 per operation
 
@@ -14,6 +15,11 @@ async function findAccountByNumber(db, number) {
   return s.empty ? null : s.docs[0];
 }
 
+const idempotencyRefs = (db, uid, operation, key) => ({
+  current: db.doc(`idempotency/${crypto.createHash('sha256').update(JSON.stringify([uid, operation, key])).digest('hex')}`),
+  legacy: db.doc(`idempotency/${uid}_${key}`),
+});
+
 // Atomic peer-to-peer transfer (FR-03) with idempotency protection (FR-04).
 async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idempotencyKey, source = 'API' }) {
   checkAmount(amount);
@@ -24,12 +30,15 @@ async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idemp
 
   const fromRef = db.doc(`accounts/${fromUid}`);
   const toRef = db.doc(`accounts/${toUid}`);
-  const idemRef = db.doc(`idempotency/${fromUid}_${idempotencyKey}`);
+  const idemRefs = idempotencyRefs(db, fromUid, 'transfer', idempotencyKey);
 
   return db.runTransaction(async (t) => {
     // all reads first
-    const [idem, from, to] = await Promise.all([t.get(idemRef), t.get(fromRef), t.get(toRef)]);
-    if (idem.exists) return { ...idem.data().response, duplicate: true };   // retry -> same answer, no double charge
+    const [idem, legacyIdem, from, to] = await Promise.all([
+      t.get(idemRefs.current), t.get(idemRefs.legacy), t.get(fromRef), t.get(toRef),
+    ]);
+    const existingIdem = idem.exists ? idem : legacyIdem;
+    if (existingIdem.exists) return { ...existingIdem.data().response, duplicate: true, event: existingIdem.data().event };   // retry -> same answer, no double charge
     if (!from.exists) throw err(404, 'Your account was not found');
     if (from.data().balance < amount) throw err(400, 'Insufficient funds');
 
@@ -43,8 +52,9 @@ async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idemp
     t.update(toRef, { balance: FieldValue.increment(amount) });
     t.set(txRef, { ...base, participants: [fromUid, toUid], status: 'COMPLETED', createdAt: FieldValue.serverTimestamp() });
     const response = { txId: txRef.id, status: 'COMPLETED', amount, toAccount: base.toAccount, newBalance: from.data().balance - amount };
-    t.set(idemRef, { response, createdAt: FieldValue.serverTimestamp() });
-    return { ...response, event: { ...base, occurredAt: new Date().toISOString() } };
+    const event = { ...base, occurredAt: new Date().toISOString() };
+    t.set(idemRefs.current, { response, event, createdAt: FieldValue.serverTimestamp() });
+    return { ...response, event };
   });
 }
 
@@ -52,10 +62,13 @@ async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idemp
 async function cash(db, { uid, amount, type, idempotencyKey }) {
   checkAmount(amount);
   const ref = db.doc(`accounts/${uid}`);
-  const idemRef = db.doc(`idempotency/${uid}_${idempotencyKey}`);
+  const idemRefs = idempotencyRefs(db, uid, type.toLowerCase(), idempotencyKey);
   return db.runTransaction(async (t) => {
-    const [idem, acc] = await Promise.all([t.get(idemRef), t.get(ref)]);
-    if (idem.exists) return { ...idem.data().response, duplicate: true };
+    const [idem, legacyIdem, acc] = await Promise.all([
+      t.get(idemRefs.current), t.get(idemRefs.legacy), t.get(ref),
+    ]);
+    const existingIdem = idem.exists ? idem : legacyIdem;
+    if (existingIdem.exists) return { ...existingIdem.data().response, duplicate: true, event: existingIdem.data().event };
     if (!acc.exists) throw err(404, 'Account not found');
     const delta = type === 'DEPOSIT' ? amount : -amount;
     if (acc.data().balance + delta < 0) throw err(400, 'Insufficient funds');
@@ -70,8 +83,9 @@ async function cash(db, { uid, amount, type, idempotencyKey }) {
     t.update(ref, { balance: FieldValue.increment(delta) });
     t.set(txRef, { ...base, participants: [uid], status: 'COMPLETED', createdAt: FieldValue.serverTimestamp() });
     const response = { txId: txRef.id, status: 'COMPLETED', amount, newBalance: acc.data().balance + delta };
-    t.set(idemRef, { response, createdAt: FieldValue.serverTimestamp() });
-    return { ...response, event: { ...base, occurredAt: new Date().toISOString() } };
+    const event = { ...base, occurredAt: new Date().toISOString() };
+    t.set(idemRefs.current, { response, event, createdAt: FieldValue.serverTimestamp() });
+    return { ...response, event };
   });
 }
 

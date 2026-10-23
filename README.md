@@ -51,9 +51,9 @@ Your app is at **https://<project-id>.web.app**.
 6. **Recurring (FR-07)**: *Recurring → Add* (A → B, ₹100, daily), then run the job on demand:
    `gcloud scheduler jobs run recurring-payments-daily --location asia-south1`
 7. **Audit (FR-09)**: `bq query --use_legacy_sql=false 'SELECT type, COUNT(*) n, SUM(amount_paise)/100 inr FROM cloudbank_audit.transactions_audit GROUP BY type'`
-8. **Admin role (FR-02)**: make an admin, then sign out/in:
+8. **Admin roles and audit (FR-02/09)**: bootstrap the first administrator, then sign out/in:
    `cd backend && npm install && GCP_PROJECT_ID=$GCP_PROJECT_ID node ../scripts/set-admin.js admin@example.com && cd ..` (the user must have signed up first).
-   An *Admin* tab appears; a normal user calling `/api/admin/stats` gets **403**.
+   An *Admin* tab appears with platform metrics, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
 
 ## 4. Looker Studio dashboard (FR-09)
 lookerstudio.google.com → *Create → Report → BigQuery* → project → `cloudbank_audit` → `transactions_audit` → Add.
@@ -97,7 +97,7 @@ Set a budget alert: Billing → Budgets & alerts → $5.
 |---|---|
 | `01` errors "billing" / "permission" | Billing not attached, or APIs still enabling. Wait 1 min and re-run. |
 | Login works but pages show 401 | `frontend/.env` values wrong, or you didn't rebuild: re-run `04`. |
-| "Account not initialised" | Sign-up's init call failed. Log in, open DevTools → Console; or call `POST /api/account/init`. |
+| "Account not initialised" | The dashboard offers **Finish account setup** to safely retry the idempotent account initialization request. |
 | Transactions/statements fail with "index" error | Composite index still building (`gcloud firestore indexes composite list`) or click the link in the Cloud Run log. |
 | Statement stays PENDING/FAILED | `gcloud functions logs read statementFunction --gen2 --region asia-south1 --limit 30` |
 | Download says signBlob/permission denied | Re-run `01` (grants `serviceAccountTokenCreator` to bank-api-sa), then re-deploy `02`. |

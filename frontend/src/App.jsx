@@ -112,13 +112,36 @@ function Standing({ list, reload }) {
 
 function Admin() {
   const [stats, setStats] = useState(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
+  const [users, setUsers] = useState([]), [usersLoading, setUsersLoading] = useState(true), [usersError, setUsersError] = useState('')
+  const [nextPageToken, setNextPageToken] = useState(null), [busyUid, setBusyUid] = useState('')
   const refresh = useCallback(async () => {
     setLoading(true); setError('')
     try { setStats(await api('/admin/stats')) }
     catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }, [])
-  useEffect(() => { refresh() }, [refresh])
+  const loadUsers = useCallback(async (pageToken, append = false) => {
+    setUsersLoading(true); setUsersError('')
+    try {
+      const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ''
+      const page = await api(`/admin/users${query}`)
+      setUsers((current) => append ? [...current, ...page.users] : page.users)
+      setNextPageToken(page.nextPageToken)
+    } catch (err) { setUsersError(err.message) }
+    finally { setUsersLoading(false) }
+  }, [])
+  useEffect(() => { refresh(); loadUsers() }, [refresh, loadUsers])
+  const setUserRole = async (user) => {
+    const role = user.role === 'admin' ? 'customer' : 'admin'
+    const action = role === 'admin' ? 'grant administrator access to' : 'remove administrator access from'
+    if (!window.confirm(`Are you sure you want to ${action} ${user.email || user.uid}? They must sign out and back in for the change to take effect.`)) return
+    setBusyUid(user.uid); setUsersError('')
+    try {
+      await api(`/admin/users/${encodeURIComponent(user.uid)}/role`, { method: 'PATCH', body: { role } })
+      setUsers((current) => current.map((item) => item.uid === user.uid ? { ...item, role } : item))
+    } catch (err) { setUsersError(err.message) }
+    finally { setBusyUid('') }
+  }
   const dashboardUrl = import.meta.env.VITE_LOOKER_STUDIO_URL?.trim()
   const safeDashboardUrl = dashboardUrl?.startsWith('https://') ? dashboardUrl : ''
   return (<>
@@ -137,6 +160,19 @@ function Admin() {
         </tbody></table></div>
       </>}
     </section>
+    <section className="card"><div className="admin-title"><div><h3>User and role management</h3>
+      <p className="muted">Administrator role changes take effect after the user signs out and back in.</p></div>
+      <button className="btn" onClick={() => loadUsers()} disabled={usersLoading}>{usersLoading ? 'Loading…' : 'Refresh users'}</button></div>
+      {usersError && <div className="bad" role="alert">{usersError}</div>}
+      <div className="table-scroll"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Action</th></tr></thead><tbody>
+        {users.map((user) => <tr key={user.uid}><td>{user.displayName || user.email || user.uid}</td><td>{user.role}</td>
+          <td>{user.disabled ? 'Disabled' : 'Active'}</td><td>{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : '—'}</td>
+          <td><button className={`btn ${user.role === 'admin' ? 'red' : ''}`} disabled={busyUid === user.uid || user.uid === auth.currentUser?.uid || usersLoading}
+            onClick={() => setUserRole(user)}>{busyUid === user.uid ? 'Saving…' : user.role === 'admin' ? 'Remove admin' : 'Make admin'}</button></td></tr>)}
+        {!users.length && !usersLoading && !usersError && <tr><td colSpan="5" className="muted">No users found.</td></tr>}
+      </tbody></table></div>
+      {nextPageToken && <button className="btn" onClick={() => loadUsers(nextPageToken, true)} disabled={usersLoading}>{usersLoading ? 'Loading…' : 'Load more users'}</button>}
+    </section>
   </>)
 }
 
@@ -152,6 +188,14 @@ function Dashboard({ user }) {
     } catch (e) { setLoadError(e.message) }
     finally { setLoading(false) }
   }, [])
+  const initializeAccount = async () => {
+    setLoading(true); setLoadError('')
+    try {
+      await api('/account/init', { method: 'POST', body: { name: user.displayName || (user.email || 'user').split('@')[0] } })
+      await user.getIdToken(true)
+      await load()
+    } catch (e) { setLoadError(e.message); setLoading(false) }
+  }
   useEffect(() => { user.getIdTokenResult().then((r) => setIsAdmin(r.claims.role === 'admin')); load(); const i = setInterval(load, 7000); return () => clearInterval(i) }, [user, load])
   const tabs = [['home', 'Home'], ['history', 'History'], ['statements', 'Statements'], ['recurring', 'Recurring'], ...(isAdmin ? [['admin', 'Admin']] : [])]
   return (<><nav><b>🏦 Cloud Bank</b>{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}
@@ -165,7 +209,8 @@ function Dashboard({ user }) {
       <div className="card"><h3>Notifications</h3>{notes.map((n) => <p key={n.id}>🔔 {n.message} <span className="muted">· {when(n.createdAt)}</span></p>)}{!notes.length && <p className="muted">Nothing yet</p>}</div></>
       : <section className="card dashboard-welcome"><span className="welcome-icon">C</span><h1>{loading ? 'Preparing your dashboard…' : 'Your account overview'}</h1>
         <p>{loading ? 'We’re securely loading your account details.' : 'We couldn’t load your account information just now. Check your connection and try again.'}</p>
-        {!loading && <button className="btn" onClick={load}>Retry loading account</button>}</section>)}
+        {!loading && <button className="btn" onClick={loadError.toLowerCase().includes('account not initialised') ? initializeAccount : load}>
+          {loadError.toLowerCase().includes('account not initialised') ? 'Finish account setup' : 'Retry loading account'}</button>}</section>)}
     {tab === 'history' && <History txs={txs} />}{tab === 'statements' && <Statements list={stmts} reload={load} />}
     {tab === 'recurring' && <Standing list={orders} reload={load} />}{tab === 'admin' && isAdmin && <Admin />}</main></>)
 }

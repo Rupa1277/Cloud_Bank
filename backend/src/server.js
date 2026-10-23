@@ -67,13 +67,19 @@ app.post('/api/account/init', auth, wrap(async (req, res) => {
     let number;
     do { number = 'CB' + String(crypto.randomInt(0, 1e10)).padStart(10, '0'); }
     while (await ledger.findAccountByNumber(db, number));
-    await ref.create({
-      ownerName: String(req.body.name || '').trim().slice(0, 60) || (req.user.email || 'user').split('@')[0],
-      email: req.user.email, accountNumber: number, balance: WELCOME_BONUS, createdAt: FieldValue.serverTimestamp(),
-    }).catch(() => {});
+    try {
+      await ref.create({
+        ownerName: String(req.body.name || '').trim().slice(0, 60) || (req.user.email || 'user').split('@')[0],
+        email: req.user.email, accountNumber: number, balance: WELCOME_BONUS, createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (e.code !== 6 && e.code !== 'already-exists') throw e;
+    }
   }
   const u = await admin.auth().getUser(req.user.uid);
-  if (!u.customClaims || !u.customClaims.role) await admin.auth().setCustomUserClaims(req.user.uid, { role: 'customer' });
+  if (!u.customClaims || !u.customClaims.role) {
+    await admin.auth().setCustomUserClaims(req.user.uid, { ...u.customClaims, role: 'customer' });
+  }
   res.json({ ok: true });
 }));
 
@@ -175,6 +181,48 @@ app.get('/api/admin/stats', auth, requireRole('admin'), wrap(async (req, res) =>
   ]);
   res.json({ accounts: a.data().count, transactions: t.data().count,
     recent: recent.docs.map((d) => { const x = d.data(); return { txId: d.id, type: x.type, amount: x.amount, from: x.fromAccount, to: x.toAccount, createdAt: x.createdAt.toDate() }; }) });
+}));
+app.get('/api/admin/users', auth, requireRole('admin'), wrap(async (req, res) => {
+  const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;
+  if (pageToken && pageToken.length > 2048) throw ledger.err(400, 'Invalid page token');
+  const page = await admin.auth().listUsers(100, pageToken);
+  res.json({
+    users: page.users.map((user) => ({
+      uid: user.uid, email: user.email || '', displayName: user.displayName || '',
+      role: user.customClaims?.role === 'admin' ? 'admin' : 'customer',
+      disabled: user.disabled, createdAt: user.metadata.creationTime,
+    })),
+    nextPageToken: page.pageToken || null,
+  });
+}));
+app.patch('/api/admin/users/:uid/role', auth, requireRole('admin'), wrap(async (req, res) => {
+  const { uid } = req.params;
+  const { role } = req.body;
+  if (!uid || uid.length > 128) throw ledger.err(400, 'Invalid user ID');
+  if (!['admin', 'customer'].includes(role)) throw ledger.err(400, 'Role must be admin or customer');
+  if (uid === req.user.uid && role !== 'admin') throw ledger.err(400, 'You cannot remove your own administrator role');
+
+  let target;
+  try { target = await admin.auth().getUser(uid); }
+  catch (e) {
+    if (e.code === 'auth/user-not-found') throw ledger.err(404, 'User not found');
+    throw e;
+  }
+  const currentRole = target.customClaims?.role === 'admin' ? 'admin' : 'customer';
+  if (currentRole === role) return res.json({ uid, role, changed: false });
+
+  if (currentRole === 'admin') {
+    let administratorCount = 0, pageToken;
+    do {
+      const page = await admin.auth().listUsers(1000, pageToken);
+      administratorCount += page.users.filter((user) => user.customClaims?.role === 'admin').length;
+      pageToken = page.pageToken;
+    } while (pageToken && administratorCount < 2);
+    if (administratorCount < 2) throw ledger.err(409, 'At least one administrator must remain');
+  }
+
+  await admin.auth().setCustomUserClaims(target.uid, { ...target.customClaims, role });
+  res.json({ uid, role, changed: true });
 }));
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));

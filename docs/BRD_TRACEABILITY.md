@@ -2,10 +2,10 @@
 | ID | Where |
 |---|---|
 | FR-01 | `backend/src/server.js` auth(), Firebase Auth in `frontend/src/firebase.js` |
-| FR-02 | custom claim set in `/api/account/init`, `scripts/set-admin.js`, `requireRole` |
+| FR-02 | Firebase custom claims in `/api/account/init`; bootstrap with `scripts/set-admin.js`; admin-only user listing and role changes in `/api/admin/users` and the Admin tab |
 | FR-03 | `shared/ledger.js` transfer() |
-| FR-04 | `Idempotency-Key` + `idempotency/` collection in ledger.js |
-| FR-05 | `/api/transfer` → publish → 200 |
+| FR-04 | Operation-scoped hashed idempotency documents in `shared/ledger.js`, with legacy-key compatibility |
+| FR-05 | `/api/transfer` → publish → 200; event payload is retained with the idempotency record so client retries can republish after transient Pub/Sub failures |
 | FR-06 | functions/index.js: notifyFunction, auditFunction, statementFunction (independent subscribers/topics) |
 | FR-07 | Cloud Scheduler jobs (scripts/03) → topic `scheduled-jobs` → scheduledFunction |
 | FR-08 | statementFunction → private bucket; `/api/statements/:id/download` signed URL |

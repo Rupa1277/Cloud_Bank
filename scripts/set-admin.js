@@ -6,6 +6,6 @@ admin.initializeApp({ projectId: process.env.GCP_PROJECT_ID });
   const email = process.argv[2];
   if (!email) throw new Error('Usage: node set-admin.js <email>');
   const u = await admin.auth().getUserByEmail(email);
-  await admin.auth().setCustomUserClaims(u.uid, { role: 'admin' });
+  await admin.auth().setCustomUserClaims(u.uid, { ...u.customClaims, role: 'admin' });
   console.log(`${email} is now an administrator. Ask them to sign out and back in.`);
 })().catch((e) => { console.error(e.message); process.exit(1); });
