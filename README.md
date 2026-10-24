@@ -38,6 +38,7 @@ cp frontend/.env.example frontend/.env && nano frontend/.env     # paste the 4 F
 npx --yes firebase-tools@latest login --no-localhost            # follow the link, paste the code back
 ./scripts/04-deploy-frontend.sh    # builds React + deploys to Firebase Hosting + Firestore deny-all rules
 ```
+The Cloud Functions deploy script uses the Node.js 22 runtime. If a function was previously deployed with Node.js 20, redeploy it with `./scripts/03-deploy-functions.sh` before the Node.js 20 runtime is decommissioned.
 Your app is at **https://<project-id>.web.app**.
 (If `01` prints a permission or "not enabled" warning, wait 1 minute and re-run it. It is safe to repeat.)
 

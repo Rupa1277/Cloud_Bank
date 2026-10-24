@@ -5,7 +5,7 @@ cp "$ROOT/shared/ledger.js" "$ROOT/functions/ledger.js"
 ENVV="STATEMENT_BUCKET=$BUCKET,BQ_DATASET=$DATASET,TOPIC_TX=transaction-completed,TOPIC_STMT=statement-requests"
 deploy() { # name topic service-account [extra flags]
   local name=$1 topic=$2 acct=$3; shift 3
-  gcloud functions deploy "$name" --gen2 --runtime nodejs20 --region "$REGION" --source "$ROOT/functions" \
+  gcloud functions deploy "$name" --gen2 --runtime nodejs22 --region "$REGION" --source "$ROOT/functions" \
     --entry-point "$name" --trigger-topic "$topic" --service-account "$(sa "$acct")" \
     --memory 256Mi --timeout 120s --min-instances 0 --max-instances 5 --set-env-vars "$ENVV" "$@"
 }
