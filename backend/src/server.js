@@ -114,7 +114,9 @@ app.get('/api/transactions', auth, wrap(async (req, res) => {
     const t = d.data();
     return { txId: d.id, type: t.type, amount: t.amount, note: t.note, status: t.status,
       direction: t.fromUid === req.user.uid ? 'DEBIT' : 'CREDIT',
-      counterparty: t.fromUid === req.user.uid ? t.toAccount : t.fromAccount, createdAt: t.createdAt.toDate() };
+      counterparty: t.fromUid === req.user.uid ? t.toAccount : t.fromAccount,
+      risk: t.fromUid === req.user.uid ? t.risk || null : null,
+      createdAt: t.createdAt.toDate() };
   }));
 }));
 
@@ -181,6 +183,17 @@ app.get('/api/admin/stats', auth, requireRole('admin'), wrap(async (req, res) =>
   ]);
   res.json({ accounts: a.data().count, transactions: t.data().count,
     recent: recent.docs.map((d) => { const x = d.data(); return { txId: d.id, type: x.type, amount: x.amount, from: x.fromAccount, to: x.toAccount, createdAt: x.createdAt.toDate() }; }) });
+}));
+app.get('/api/admin/fraud-alerts', auth, requireRole('admin'), wrap(async (req, res) => {
+  const recent = await db.collection('transactions').orderBy('createdAt', 'desc').limit(100).get();
+  res.json(recent.docs.flatMap((d) => {
+    const t = d.data();
+    if (!t.risk || t.risk.level === 'LOW') return [];
+    return [{
+      txId: d.id, fromAccount: t.fromAccount, toAccount: t.toAccount, amount: t.amount,
+      createdAt: t.createdAt.toDate(), risk: t.risk,
+    }];
+  }));
 }));
 app.get('/api/admin/users', auth, requireRole('admin'), wrap(async (req, res) => {
   const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;

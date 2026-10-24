@@ -53,7 +53,8 @@ Your app is at **https://<project-id>.web.app**.
 7. **Audit (FR-09)**: `bq query --use_legacy_sql=false 'SELECT type, COUNT(*) n, SUM(amount_paise)/100 inr FROM cloudbank_audit.transactions_audit GROUP BY type'`
 8. **Admin roles and audit (FR-02/09)**: bootstrap the first administrator, then sign out/in:
    `cd backend && npm install && GCP_PROJECT_ID=$GCP_PROJECT_ID node ../scripts/set-admin.js admin@example.com && cd ..` (the user must have signed up first).
-   An *Admin* tab appears with platform metrics, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
+   An *Admin* tab appears with platform metrics, recent risk signals, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
+9. **Fraud-detection showcase**: in A's dashboard choose **Deposit** and add enough simulated funds to demonstrate larger transfers. Send ₹50,000 or more to B to see a HIGH risk signal; a ₹25,000+ transfer or several transfers in a five-minute window can also produce a risk alert. Review personal alerts under **Security** and platform-wide recent signals under **Admin**. This is an explainable, rule-based demonstration: it records risk scores and reasons but does not block transfers or claim to be production/ML fraud detection.
 
 ## 4. Looker Studio dashboard (FR-09)
 lookerstudio.google.com → *Create → Report → BigQuery* → project → `cloudbank_audit` → `transactions_audit` → Add.
@@ -79,6 +80,7 @@ it rises from 0/1 to several (max 10) and falls back to **0** a few minutes afte
 | No duplicate charges (FR-04) | `Idempotency-Key` header → `idempotency/{uid_key}` doc checked inside the same transaction |
 | Immediate response + async fan-out (FR-05/06) | publish after commit, 3 independent subscribers |
 | Private statements (FR-08) | bucket with public-access-prevention + uniform access; V4 signed URLs (10 min) |
+| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency, amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. Informational only; no automatic blocking or ML. |
 | Least privilege | 5 dedicated service accounts, bucket/secret-level bindings (`scripts/01-setup-gcp.sh`) |
 | No secrets in code | webhook URL in **Secret Manager**, injected via `--set-secrets`; Firestore has no connection string |
 | Defense in depth | `firestore.rules` = deny-all for clients; helmet + HSTS headers; input validation; amount limits |
@@ -108,5 +110,5 @@ Set a budget alert: Billing → Budgets & alerts → $5.
 `./scripts/teardown.sh`, or simply delete the GCP project (Console → IAM & Admin → Manage resources).
 
 ## Known limits (state these honestly in your viva)
-Publishing to Pub/Sub happens after the DB commit; in a crash between the two, an event could be lost (production fix: transactional outbox).
+Publishing to Pub/Sub happens after the DB commit; in a crash between the two, an event could be lost (production fix: transactional outbox). Fraud signals are deterministic demo rules only and are not a validated fraud model.
 Account numbers are looked up by query; there is no KYC or real bank rails (out of scope per BRD). Firebase Auth email/password only (no MFA in MVP).

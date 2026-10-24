@@ -13,7 +13,7 @@ function Login() {
       if (mode === 'signup') {
         await createUserWithEmailAndPassword(auth, f.email, f.password)
         await api('/account/init', { method: 'POST', body: { name: f.name } })
-        await auth.currentUser.getIdToken(true)            // refresh so the new role claim is in the JWT
+        await auth.currentUser.getIdToken(true)
       } else await signInWithEmailAndPassword(auth, f.email, f.password)
     } catch (err) { setMsg(err.message.replace('Firebase: ', '')) }
   }
@@ -22,7 +22,7 @@ function Login() {
       <span className="landing-nav-note">Banking, made simple</span></header>
     <main className="landing-main" id="home">
       <section className="hero-copy">
-        <span className="eyebrow"><span className="eyebrow-dot" /> YOUR MONEY, IN CLEAR VIEW</span>
+        <span className="eyebrow"><span className="eyebrow-dot" />YOUR MONEY, IN CLEAR VIEW</span>
         <h1>A simpler way to stay on top of your money.</h1>
         <p className="hero-description">One secure place to check your balance, move money, and keep track of every transaction.</p>
         <div className="hero-points">
@@ -32,10 +32,14 @@ function Login() {
         </div>
         <p className="demo-note">A digital banking experience for simulated money.</p>
       </section>
-      <section className="card auth-card">
+      <section className="auth-card card">
         <span className="auth-kicker">{mode === 'signup' ? 'GET STARTED' : 'WELCOME BACK'}</span>
         <h2>{mode === 'signup' ? 'Create your account' : 'Sign in to your account'}</h2>
         <p className="muted">{mode === 'signup' ? 'It only takes a moment to get started.' : 'Your account is ready when you are.'}</p>
+        <div className="seg" role="tablist">
+          <button type="button" className={mode === 'login' ? 'on' : ''} onClick={() => setMode('login')}>Log in</button>
+          <button type="button" className={mode === 'signup' ? 'on' : ''} onClick={() => setMode('signup')}>Create account</button>
+        </div>
         <form onSubmit={submit}>
           {mode === 'signup' && <label>Full name<input required autoComplete="name" placeholder="Your name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>}
           <label>Email address<input required type="email" autoComplete="email" placeholder="you@example.com" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
@@ -67,7 +71,7 @@ function Transfer({ onDone }) {
   const go = async (e) => { e.preventDefault(); setMsg(null); setBusy(true)
     try {                                                 // the SAME key is reused if the request is retried -> no double charge
       const r = await api('/transfer', { method: 'POST', body: f, idem: key })
-      setMsg({ ok: `Transfer complete${r.duplicate ? ' (duplicate request ignored)' : ''}. New balance ${inr(r.newBalance)}` })
+      setMsg({ ok: `Transfer complete${r.duplicate ? ' (duplicate request ignored)' : ''}. New balance ${inr(r.newBalance)}`, risk: r.risk })
       setF({ toAccount: '', amount: '', note: '' }); setKey(newKey()); onDone()
     } catch (err) { setMsg({ bad: err.message + ' - you can safely press Send again.' }) }
     setBusy(false) }
@@ -76,7 +80,13 @@ function Transfer({ onDone }) {
     <div className="row"><input required type="number" min="1" step="0.01" placeholder="Amount (₹)" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
       <input placeholder="Note (optional)" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></div>
     <button className="btn" disabled={busy}>{busy ? 'Sending…' : 'Send'}</button>
-    {msg && <div className={msg.ok ? 'ok' : 'bad'} style={{ marginTop: 8 }}>{msg.ok || msg.bad}</div>}</form>)
+    {msg && <div className={msg.ok ? 'ok' : 'bad'} style={{ marginTop: 8 }}>{msg.ok || msg.bad}
+      {msg.risk && msg.risk.level !== 'LOW' && <div className={`risk-result ${msg.risk.level.toLowerCase()}`}>
+        <strong>{msg.risk.level} risk signal · score {msg.risk.score}/100</strong>
+        <span>{msg.risk.reasons.join(' · ')}</span>
+        <small>Informational demo alert; this transfer was not blocked.</small>
+      </div>}
+    </div>}</form>)
 }
 
 function History({ txs }) {
@@ -84,6 +94,35 @@ function History({ txs }) {
     {txs.map((t) => (<tr key={t.txId}><td>{when(t.createdAt)}</td><td>{t.type}</td><td>{t.counterparty}</td>
       <td className={t.direction === 'DEBIT' ? 'debit' : 'credit'}>{t.direction === 'DEBIT' ? '−' : '+'}{inr(t.amount)}</td></tr>))}
     {!txs.length && <tr><td colSpan="4" className="muted">No transactions yet</td></tr>}</tbody></table></div>)
+}
+
+function FraudMonitor({ txs }) {
+  const alerts = txs.filter((tx) => tx.direction === 'DEBIT' && tx.risk && tx.risk.level !== 'LOW')
+  const highCount = alerts.filter((tx) => tx.risk.level === 'HIGH').length
+  return (<div className="security-page">
+    <section className="security-intro">
+      <span className="eyebrow">ACCOUNT PROTECTION</span>
+      <h1>Transfer risk monitor</h1>
+      <p>Explainable rules review transfer size and recent activity. Alerts are for demonstration and do not block transactions.</p>
+    </section>
+    <section className="security-metrics">
+      <div className="card"><span className="muted">Flagged transfers</span><strong>{alerts.length}</strong></div>
+      <div className="card"><span className="muted">High risk</span><strong>{highCount}</strong></div>
+      <div className="card"><span className="muted">Detection type</span><strong className="metric-label">Rule-based demo</strong></div>
+    </section>
+    <section className="card">
+      <div className="admin-title"><div><h3>Recent risk alerts</h3><p className="muted">Only transfers you initiated are shown here.</p></div></div>
+      {alerts.length ? <div className="risk-list">{alerts.map((tx) => <article className="risk-item" key={tx.txId}>
+        <div className="risk-item-heading">
+          <div><span className={`risk-badge ${tx.risk.level.toLowerCase()}`}>{tx.risk.level} RISK</span><h4>Transfer to {tx.counterparty}</h4></div>
+          <strong>{inr(tx.amount)}</strong>
+        </div>
+        <p>{when(tx.createdAt)} · Risk score {tx.risk.score}/100</p>
+        <ul>{tx.risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      </article>)}</div> : <div className="empty-state"><b>No risk alerts yet</b><span>Try a larger transfer or several transfers close together to demonstrate the rules.</span></div>}
+    </section>
+    <p className="muted security-disclaimer">Demo only: these deterministic signals are not a fraud verdict and are not a substitute for production fraud controls.</p>
+  </div>)
 }
 
 function Statements({ list, reload }) {
@@ -112,6 +151,7 @@ function Standing({ list, reload }) {
 
 function Admin() {
   const [stats, setStats] = useState(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
+  const [fraudAlerts, setFraudAlerts] = useState([]), [fraudLoading, setFraudLoading] = useState(true), [fraudError, setFraudError] = useState('')
   const [users, setUsers] = useState([]), [usersLoading, setUsersLoading] = useState(true), [usersError, setUsersError] = useState('')
   const [nextPageToken, setNextPageToken] = useState(null), [busyUid, setBusyUid] = useState('')
   const refresh = useCallback(async () => {
@@ -130,7 +170,13 @@ function Admin() {
     } catch (err) { setUsersError(err.message) }
     finally { setUsersLoading(false) }
   }, [])
-  useEffect(() => { refresh(); loadUsers() }, [refresh, loadUsers])
+  const loadFraudAlerts = useCallback(async () => {
+    setFraudLoading(true); setFraudError('')
+    try { setFraudAlerts(await api('/admin/fraud-alerts')) }
+    catch (err) { setFraudError(err.message) }
+    finally { setFraudLoading(false) }
+  }, [])
+  useEffect(() => { refresh(); loadUsers(); loadFraudAlerts() }, [refresh, loadUsers, loadFraudAlerts])
   const setUserRole = async (user) => {
     const role = user.role === 'admin' ? 'customer' : 'admin'
     const action = role === 'admin' ? 'grant administrator access to' : 'remove administrator access from'
@@ -145,6 +191,18 @@ function Admin() {
   const dashboardUrl = import.meta.env.VITE_LOOKER_STUDIO_URL?.trim()
   const safeDashboardUrl = dashboardUrl?.startsWith('https://') ? dashboardUrl : ''
   return (<>
+    <section className="card">
+      <div className="admin-title"><div><span className="eyebrow">RISK MONITORING</span><h3>Recent fraud signals</h3>
+        <p className="muted">Rule-based alerts for completed transfers. Signals never block a payment.</p></div>
+        <button className="btn" onClick={loadFraudAlerts} disabled={fraudLoading}>{fraudLoading ? 'Checking…' : 'Refresh alerts'}</button></div>
+      {fraudError && <div className="bad" role="alert">{fraudError}</div>}
+      {fraudLoading && !fraudAlerts.length ? <p className="muted">Loading risk signals…</p> : fraudAlerts.length
+        ? <div className="table-scroll"><table><thead><tr><th>Risk</th><th>Score</th><th>From → To</th><th>Amount</th><th>Signals</th><th>Date</th></tr></thead><tbody>
+          {fraudAlerts.map((alert) => <tr key={alert.txId}><td><span className={`risk-badge ${alert.risk.level.toLowerCase()}`}>{alert.risk.level}</span></td>
+            <td>{alert.risk.score}/100</td><td>{alert.fromAccount} → {alert.toAccount}</td><td>{inr(alert.amount)}</td>
+            <td>{alert.risk.reasons.join(' · ')}</td><td>{when(alert.createdAt)}</td></tr>)}
+        </tbody></table></div> : !fraudError && <div className="empty-state"><b>No flagged transfers in the latest activity</b><span>Try a large transfer or quick repeated transfers in the demo.</span></div>}
+    </section>
     <section className="card report-card"><div><span className="eyebrow">ADMINISTRATOR</span><h2>Audit and reporting</h2>
       <p className="muted">Explore transaction audit data streamed to BigQuery.</p></div>
       {safeDashboardUrl ? <a className="btn report-link" href={safeDashboardUrl} target="_blank" rel="noopener noreferrer">Open Looker Studio <span aria-hidden="true">↗</span></a>
@@ -197,22 +255,35 @@ function Dashboard({ user }) {
     } catch (e) { setLoadError(e.message); setLoading(false) }
   }
   useEffect(() => { user.getIdTokenResult().then((r) => setIsAdmin(r.claims.role === 'admin')); load(); const i = setInterval(load, 7000); return () => clearInterval(i) }, [user, load])
-  const tabs = [['home', 'Home'], ['history', 'History'], ['statements', 'Statements'], ['recurring', 'Recurring'], ...(isAdmin ? [['admin', 'Admin']] : [])]
-  return (<><nav><b>🏦 Cloud Bank</b>{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}
-    <button onClick={() => signOut(auth)}>Log out</button></nav><main className="dashboard-main">
-    {loadError && <div className="bad dashboard-alert" role="alert"><span>{loadError}</span><button className="btn" onClick={load}>Try again</button></div>}
-    {tab === 'home' && (acc ? <><section className="dashboard-heading"><div><span className="eyebrow">YOUR DASHBOARD</span><h1>Good to see you, {acc.ownerName}.</h1>
-      <p>Here’s a snapshot of your Cloud Bank account.</p></div><span className="account-status"><span /> Account active</span></section>
-      <div className="card balance-card"><div><div className="muted">AVAILABLE BALANCE</div><div className="bal">{inr(acc.balance)}</div>
-        <div className="muted">Account number <b>{acc.accountNumber}</b></div></div><div className="balance-symbol" aria-hidden="true">₹</div></div>
-      <Transfer onDone={load} /><div className="row"><Money title="Deposit" path="/deposit" onDone={load} /><Money title="Withdraw" path="/withdraw" onDone={load} /></div>
-      <div className="card"><h3>Notifications</h3>{notes.map((n) => <p key={n.id}>🔔 {n.message} <span className="muted">· {when(n.createdAt)}</span></p>)}{!notes.length && <p className="muted">Nothing yet</p>}</div></>
-      : <section className="card dashboard-welcome"><span className="welcome-icon">C</span><h1>{loading ? 'Preparing your dashboard…' : 'Your account overview'}</h1>
-        <p>{loading ? 'We’re securely loading your account details.' : 'We couldn’t load your account information just now. Check your connection and try again.'}</p>
-        {!loading && <button className="btn" onClick={loadError.toLowerCase().includes('account not initialised') ? initializeAccount : load}>
-          {loadError.toLowerCase().includes('account not initialised') ? 'Finish account setup' : 'Retry loading account'}</button>}</section>)}
-    {tab === 'history' && <History txs={txs} />}{tab === 'statements' && <Statements list={stmts} reload={load} />}
-    {tab === 'recurring' && <Standing list={orders} reload={load} />}{tab === 'admin' && isAdmin && <Admin />}</main></>)
+  const tabs = [['home', 'Home'], ['history', 'History'], ['security', 'Security'], ['statements', 'Statements'], ['recurring', 'Recurring'], ...(isAdmin ? [['admin', 'Admin']] : [])]
+  return (<div className="app">
+    <aside className="rail">
+      <div className="brand"><span className="brand-mark">C</span>Cloud Bank</div>
+      <div className="nav-group">
+        {tabs.map(([k, l]) => <button key={k} className={tab === k ? 'nav on' : 'nav'} onClick={() => setTab(k)}>{l}</button>)}
+      </div>
+      <div className="who">
+        <div>{user.email}</div>
+        <button onClick={() => signOut(auth)}>Log out</button>
+      </div>
+    </aside>
+    <main className="main dashboard-main">
+      {loadError && <div className="bad dashboard-alert" role="alert"><span>{loadError}</span><button className="btn" onClick={load}>Try again</button></div>}
+      {tab === 'home' && (acc ? <><section className="dashboard-heading"><div><span className="eyebrow">YOUR DASHBOARD</span><h1>Good to see you, {acc.ownerName}.</h1>
+        <p>Here’s a snapshot of your Cloud Bank account.</p></div><span className="account-status"><span />Account active</span></section>
+        <div className="card balance-card"><div><div className="muted">AVAILABLE BALANCE</div><div className="bal">{inr(acc.balance)}</div>
+          <div className="muted">Account number <b>{acc.accountNumber}</b></div></div><div className="balance-symbol" aria-hidden="true">₹</div></div>
+        <Transfer onDone={load} /><div className="row"><Money title="Deposit" path="/deposit" onDone={load} /><Money title="Withdraw" path="/withdraw" onDone={load} /></div>
+        <div className="card"><h3>Notifications</h3>{notes.map((n) => <p key={n.id}>🔔 {n.message} <span className="muted">· {when(n.createdAt)}</span></p>)}{!notes.length && <p className="muted">Nothing yet</p>}</div></>
+        : <section className="card dashboard-welcome"><span className="welcome-icon">C</span><h1>{loading ? 'Preparing your dashboard…' : 'Your account overview'}</h1>
+          <p>{loading ? 'We’re securely loading your account details.' : 'We couldn’t load your account information just now. Check your connection and try again.'}</p>
+          {!loading && <button className="btn" onClick={loadError.toLowerCase().includes('account not initialised') ? initializeAccount : load}>
+            {loadError.toLowerCase().includes('account not initialised') ? 'Finish account setup' : 'Retry loading account'}</button>}</section>)}
+      {tab === 'history' && <History txs={txs} />}{tab === 'statements' && <Statements list={stmts} reload={load} />}
+      {tab === 'security' && <FraudMonitor txs={txs} />}
+      {tab === 'recurring' && <Standing list={orders} reload={load} />}{tab === 'admin' && isAdmin && <Admin />}
+    </main>
+  </div>)
 }
 
 export default function App() {

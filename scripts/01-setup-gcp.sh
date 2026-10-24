@@ -20,6 +20,7 @@ gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-buck
 echo "== BigQuery audit dataset + table"
 bq --location="$REGION" mk -d "$PROJECT_ID:$DATASET" 2>/dev/null || echo "   (dataset exists)"
 bq mk -t "$PROJECT_ID:$DATASET.transactions_audit" "$ROOT/scripts/audit_schema.json" 2>/dev/null || echo "   (table exists)"
+bq update --schema "$ROOT/scripts/audit_schema.json" "$PROJECT_ID:$DATASET.transactions_audit"
 echo "== Secret Manager (notification webhook; replace the placeholder later if you want live alerts)"
 printf 'none' | gcloud secrets create notify-webhook-url --data-file=- --replication-policy=automatic 2>/dev/null || echo "   (secret exists)"
 echo "== Service accounts (one per component = least privilege)"

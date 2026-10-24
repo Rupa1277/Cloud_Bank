@@ -3,6 +3,9 @@
 const crypto = require('crypto');
 const { FieldValue } = require('firebase-admin/firestore');
 const MAX_AMOUNT = 10000000; // INR 1,00,000 per operation
+const RISK_HISTORY_LIMIT = 20;
+const RISK_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RAPID_TRANSFER_WINDOW_MS = 5 * 60 * 1000;
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const checkAmount = (a) => {
@@ -20,6 +23,48 @@ const idempotencyRefs = (db, uid, operation, key) => ({
   legacy: db.doc(`idempotency/${uid}_${key}`),
 });
 
+function assessTransferRisk({ amount, toUid, recent = [], now = Date.now() }) {
+  const history = (Array.isArray(recent) ? recent : []).filter((item) =>
+    Number.isInteger(item.amount) && typeof item.toUid === 'string' &&
+    Number.isFinite(item.createdAtMs) && item.createdAtMs >= now - RISK_HISTORY_WINDOW_MS);
+  const reasons = [];
+  let score = 0;
+
+  if (amount >= 5000000) {
+    score += 60;
+    reasons.push('High-value transfer (INR 50,000 or more)');
+  } else if (amount >= 2500000) {
+    score += 40;
+    reasons.push('Large transfer (INR 25,000 or more)');
+  }
+
+  if (history.length >= 3) {
+    const average = history.reduce((total, item) => total + item.amount, 0) / history.length;
+    if (amount >= 500000 && amount >= average * 3) {
+      score += 35;
+      reasons.push('Amount is at least 3x your recent transfer average');
+    }
+  }
+
+  const rapidCount = history.filter((item) => item.createdAtMs >= now - RAPID_TRANSFER_WINDOW_MS).length;
+  if (rapidCount >= 2) {
+    score += 35;
+    reasons.push('Multiple transfers within a short time');
+  }
+
+  if (!history.some((item) => item.toUid === toUid)) {
+    score += 10;
+    reasons.push('First transfer to this recipient in the recent activity window');
+  }
+
+  const cappedScore = Math.min(score, 100);
+  return {
+    score: cappedScore,
+    level: cappedScore >= 60 ? 'HIGH' : cappedScore >= 30 ? 'MEDIUM' : 'LOW',
+    reasons,
+  };
+}
+
 // Atomic peer-to-peer transfer (FR-03) with idempotency protection (FR-04).
 async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idempotencyKey, source = 'API' }) {
   checkAmount(amount);
@@ -30,30 +75,39 @@ async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idemp
 
   const fromRef = db.doc(`accounts/${fromUid}`);
   const toRef = db.doc(`accounts/${toUid}`);
+  const riskStateRef = db.doc(`riskSignals/${fromUid}`);
   const idemRefs = idempotencyRefs(db, fromUid, 'transfer', idempotencyKey);
 
   return db.runTransaction(async (t) => {
     // all reads first
-    const [idem, legacyIdem, from, to] = await Promise.all([
-      t.get(idemRefs.current), t.get(idemRefs.legacy), t.get(fromRef), t.get(toRef),
+    const [idem, legacyIdem, from, to, riskState] = await Promise.all([
+      t.get(idemRefs.current), t.get(idemRefs.legacy), t.get(fromRef), t.get(toRef), t.get(riskStateRef),
     ]);
     const existingIdem = idem.exists ? idem : legacyIdem;
     if (existingIdem.exists) return { ...existingIdem.data().response, duplicate: true, event: existingIdem.data().event };   // retry -> same answer, no double charge
     if (!from.exists) throw err(404, 'Your account was not found');
     if (from.data().balance < amount) throw err(400, 'Insufficient funds');
 
+    const now = Date.now();
+    const recent = riskState.exists && Array.isArray(riskState.data().recent) ? riskState.data().recent : [];
+    const risk = assessTransferRisk({ amount, toUid, recent, now });
+    const recentTransfers = recent
+      .filter((item) => Number.isFinite(item.createdAtMs) && item.createdAtMs >= now - RISK_HISTORY_WINDOW_MS)
+      .concat({ toUid, amount, createdAtMs: now })
+      .slice(-RISK_HISTORY_LIMIT);
     const txRef = db.collection('transactions').doc();
     const base = {
       txId: txRef.id, type: 'TRANSFER', fromUid, toUid,
       fromAccount: from.data().accountNumber, toAccount: to.data().accountNumber,
-      amount, note: String(note).slice(0, 80), source,
+      amount, note: String(note).slice(0, 80), source, risk,
     };
     t.update(fromRef, { balance: FieldValue.increment(-amount) });
     t.update(toRef, { balance: FieldValue.increment(amount) });
     t.set(txRef, { ...base, participants: [fromUid, toUid], status: 'COMPLETED', createdAt: FieldValue.serverTimestamp() });
-    const response = { txId: txRef.id, status: 'COMPLETED', amount, toAccount: base.toAccount, newBalance: from.data().balance - amount };
+    const response = { txId: txRef.id, status: 'COMPLETED', amount, toAccount: base.toAccount, newBalance: from.data().balance - amount, risk };
     const event = { ...base, occurredAt: new Date().toISOString() };
     t.set(idemRefs.current, { response, event, createdAt: FieldValue.serverTimestamp() });
+    t.set(riskStateRef, { recent: recentTransfers, updatedAt: FieldValue.serverTimestamp() });
     return { ...response, event };
   });
 }
@@ -89,4 +143,4 @@ async function cash(db, { uid, amount, type, idempotencyKey }) {
   });
 }
 
-module.exports = { transfer, cash, findAccountByNumber, err, MAX_AMOUNT };
+module.exports = { transfer, cash, findAccountByNumber, assessTransferRisk, err, MAX_AMOUNT };
