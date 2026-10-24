@@ -54,7 +54,13 @@ Your app is at **https://<project-id>.web.app**.
 8. **Admin roles and audit (FR-02/09)**: bootstrap the first administrator, then sign out/in:
    `cd backend && npm install && GCP_PROJECT_ID=$GCP_PROJECT_ID node ../scripts/set-admin.js admin@example.com && cd ..` (the user must have signed up first).
    An *Admin* tab appears with platform metrics, recent risk signals, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
-9. **Fraud-detection showcase**: in A's dashboard choose **Deposit** and add enough simulated funds to demonstrate larger transfers. Send ₹50,000 or more to B to see a HIGH risk signal; a ₹25,000+ transfer or several transfers in a five-minute window can also produce a risk alert. Review personal alerts under **Security** and platform-wide recent signals under **Admin**. This is an explainable, rule-based demonstration: it records risk scores and reasons but does not block transfers or claim to be production/ML fraud detection.
+9. **Fraud-detection showcase**: the optional demo endpoint is disabled by default and only available to an administrator. Before enabling it, confirm the admin account has at least ₹1,50,000 simulated balance and set up a different recipient account. Temporarily enable the endpoint:
+   `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=true`
+   Then run the helper from the repository root, setting the environment variables in PowerShell (`CLOUDBANK_BASE_URL`, `FIREBASE_API_KEY`, `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_RECIPIENT_ACCOUNT`):
+   `node loadtest/simulate-fraud.js`
+   It signs in as the admin and executes three serial ₹50,000 simulated transfers using the atomic ledger path. The third transfer should show the velocity signal (+35); the high-value rule also applies. Review **Security** and **Admin** for the alerts, then disable the endpoint:
+   `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=false`
+   Alternatively set the recipient and `DEMO_AMOUNT_INR` (maximum ₹1,00,000 per transfer; sender needs 3× that amount). This is an explainable, rule-based demonstration: transfers are not blocked and the score is not a production/ML fraud verdict.
 
 ## 4. Looker Studio dashboard (FR-09)
 lookerstudio.google.com → *Create → Report → BigQuery* → project → `cloudbank_audit` → `transactions_audit` → Add.
@@ -80,7 +86,7 @@ it rises from 0/1 to several (max 10) and falls back to **0** a few minutes afte
 | No duplicate charges (FR-04) | `Idempotency-Key` header → `idempotency/{uid_key}` doc checked inside the same transaction |
 | Immediate response + async fan-out (FR-05/06) | publish after commit, 3 independent subscribers |
 | Private statements (FR-08) | bucket with public-access-prevention + uniform access; V4 signed URLs (10 min) |
-| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency, amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. Informational only; no automatic blocking or ML. |
+| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency (third transfer within two minutes), amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. Optional `/api/demo/simulate-fraud` is admin-only and disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true`. Informational only; no automatic blocking or ML. |
 | Least privilege | 5 dedicated service accounts, bucket/secret-level bindings (`scripts/01-setup-gcp.sh`) |
 | No secrets in code | webhook URL in **Secret Manager**, injected via `--set-secrets`; Firestore has no connection string |
 | Defense in depth | `firestore.rules` = deny-all for clients; helmet + HSTS headers; input validation; amount limits |

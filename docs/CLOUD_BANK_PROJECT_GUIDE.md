@@ -68,7 +68,7 @@ Risk assessment is performed in the backend transfer path using:
 - Up to 20 recent outgoing transfer records for the sender.
 - A 24-hour history window.
 - Whether the recipient appears in that recent history.
-- Whether multiple transfers have occurred in the last five minutes.
+- Whether multiple transfers have occurred in the last two minutes.
 
 Current scoring:
 
@@ -77,7 +77,7 @@ Current scoring:
 | Transfer amount is INR 50,000 or more | 60 |
 | Otherwise, amount is INR 25,000 or more | 40 |
 | At least 3 prior records exist and this transfer is at least INR 5,000 and 3x their average | 35 |
-| At least 2 prior transfers occurred in the last 5 minutes | 35 |
+| At least 2 prior transfers occurred in the last 2 minutes (the current operation is the third consecutive outgoing transfer) | 35 |
 | First transfer to this recipient in the stored recent activity window | 10 |
 
 The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `HIGH` (60–100). Reasons are returned and persisted with the transfer.
@@ -85,7 +85,7 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 ### Behavior and presentation
 
 - Risk assessment does **not** block, delay, or reject a valid transfer.
-- The successful response retains normal transfer status and includes a `risk` object.
+- The successful response retains normal transfer status and includes a `risk` object. Firestore transaction documents also store `risk_score`, `risk_level`, and `risk_reasons` fields.
 - Risk history is updated atomically with the completed transfer and idempotency record.
 - The Security view shows flagged outgoing transfers returned in the user's transaction history.
 - Admin risk alerts are restricted to administrators and scan the latest 100 transactions for non-low risk records.
@@ -99,7 +99,7 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 3. Send INR 50,000 or more to produce a high-value signal, if account balance permits.
 4. Review the transfer response and the sender's Security view.
 5. Sign in as an administrator to review recent non-low signals in Admin.
-6. For a repeated-transfer demonstration, make multiple outgoing transfers within five minutes.
+6. For a repeated-transfer demonstration, use the optional admin-only demo endpoint below to execute three outgoing transfers in sequence; the third transfer should match the two-minute velocity rule.
 
 Deposits, withdrawals, transfers, and welcome balances are simulated; clearly state this during demonstrations.
 
@@ -152,6 +152,7 @@ All application API routes except `/api/health` require a valid Firebase ID toke
 | POST | `/api/account/init` | Create the authenticated user's account if missing and initialize a customer role claim. |
 | GET | `/api/account` | Fetch the current user's account. |
 | POST | `/api/transfer` | Atomic peer-to-peer transfer; requires an `Idempotency-Key`. |
+| POST | `/api/demo/simulate-fraud` | Admin-only demo endpoint; requires the `DEMO_FRAUD_SIMULATION_ENABLED=true` environment flag, an `Idempotency-Key`, and a different recipient account. Executes three serial transfers through the existing atomic ledger path. |
 | POST | `/api/deposit` | Simulated deposit; requires an `Idempotency-Key`. |
 | POST | `/api/withdraw` | Simulated withdrawal; requires an `Idempotency-Key`. |
 | GET | `/api/transactions` | Current user's latest 50 transactions. |
@@ -232,6 +233,22 @@ From Cloud Shell (Linux shell):
 The audit schema now contains `risk_score`, `risk_level`, and `risk_reasons`. BigQuery does not permit removing or changing arbitrary existing fields through `bq update --schema`; adding new nullable fields is normally compatible. If updating an existing table fails, inspect its schema and apply a supported additive schema update rather than dropping or recreating the audit table (which could destroy audit history). Validate the exact GCP CLI behavior before running provisioning commands on a project with existing data.
 
 Never run teardown or destructive data/resource operations without explicit human approval and a backup/impact check.
+
+### Fraud simulation endpoint
+
+The endpoint is disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true` is explicitly set on Cloud Run. It also requires a valid Firebase ID token with the admin role. Keep the deployment default disabled; only enable it temporarily for an approved demo, then set it back to `false`.
+
+The endpoint accepts `{ "recipientAccount": "CB...", "amount": 50000 }` where `amount` is INR and defaults to ₹50,000. It generates three serial transfers to the same recipient with an idempotency key derived from the caller's `Idempotency-Key`. Each transfer uses the normal ledger transaction, records the risk object, and publishes its transaction event. A high-value demo requires enough simulated sender funds for all three transfers (₹1,50,000 at the default amount). The simulation is not a single all-or-nothing batch: each individual transfer is atomic. Do not invoke it against accounts/data unless the demo operator expects these simulated ledger entries.
+
+The Node 20 helper `loadtest/simulate-fraud.js` signs in through Firebase Authentication and calls the endpoint. Set these environment variables locally; do not commit them:
+
+- `CLOUDBANK_BASE_URL` — deployed Firebase Hosting URL or Cloud Run API URL.
+- `FIREBASE_API_KEY` — Firebase Web API key for the project.
+- `DEMO_EMAIL` and `DEMO_PASSWORD` — an administrator's test login.
+- `DEMO_RECIPIENT_ACCOUNT` — another test account's account number.
+- Optional `DEMO_AMOUNT_INR` — transfer amount in INR; the sender needs three times this amount.
+
+Run it with `node loadtest/simulate-fraud.js`. The script does not print the ID token or password. A retry using a new helper invocation creates a new idempotency key and performs another three transfers; only retry the same HTTP request with the same key if you intend to replay the original simulation.
 
 ## Security, privacy, and cost guardrails
 

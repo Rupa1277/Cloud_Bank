@@ -5,7 +5,7 @@ const { FieldValue } = require('firebase-admin/firestore');
 const MAX_AMOUNT = 10000000; // INR 1,00,000 per operation
 const RISK_HISTORY_LIMIT = 20;
 const RISK_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const RAPID_TRANSFER_WINDOW_MS = 5 * 60 * 1000;
+const RAPID_TRANSFER_WINDOW_MS = 2 * 60 * 1000;
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const checkAmount = (a) => {
@@ -30,6 +30,7 @@ function assessTransferRisk({ amount, toUid, recent = [], now = Date.now() }) {
   const reasons = [];
   let score = 0;
 
+  // A transfer of INR 50,000 scores HIGH by itself; INR 25,000 starts at MEDIUM.
   if (amount >= 5000000) {
     score += 60;
     reasons.push('High-value transfer (INR 50,000 or more)');
@@ -38,6 +39,7 @@ function assessTransferRisk({ amount, toUid, recent = [], now = Date.now() }) {
     reasons.push('Large transfer (INR 25,000 or more)');
   }
 
+  // Compare against at least three recent transfers to avoid overreacting to sparse history.
   if (history.length >= 3) {
     const average = history.reduce((total, item) => total + item.amount, 0) / history.length;
     if (amount >= 500000 && amount >= average * 3) {
@@ -46,12 +48,15 @@ function assessTransferRisk({ amount, toUid, recent = [], now = Date.now() }) {
     }
   }
 
+  // Two prior outgoing transfers in this two-minute window mean the current transfer is the third rapid transfer.
+  // Two prior outgoing transfers make the current one the third transfer in the two-minute demo window.
   const rapidCount = history.filter((item) => item.createdAtMs >= now - RAPID_TRANSFER_WINDOW_MS).length;
   if (rapidCount >= 2) {
     score += 35;
     reasons.push('Multiple transfers within a short time');
   }
 
+  // A new recipient adds context but does not by itself imply suspicious activity.
   if (!history.some((item) => item.toUid === toUid)) {
     score += 10;
     reasons.push('First transfer to this recipient in the recent activity window');
@@ -100,6 +105,7 @@ async function transfer(db, { fromUid, toAccountNumber, amount, note = '', idemp
       txId: txRef.id, type: 'TRANSFER', fromUid, toUid,
       fromAccount: from.data().accountNumber, toAccount: to.data().accountNumber,
       amount, note: String(note).slice(0, 80), source, risk,
+      risk_score: risk.score, risk_level: risk.level, risk_reasons: risk.reasons,
     };
     t.update(fromRef, { balance: FieldValue.increment(-amount) });
     t.update(toRef, { balance: FieldValue.increment(amount) });
@@ -143,4 +149,4 @@ async function cash(db, { uid, amount, type, idempotencyKey }) {
   });
 }
 
-module.exports = { transfer, cash, findAccountByNumber, assessTransferRisk, err, MAX_AMOUNT };
+module.exports = { transfer, cash, findAccountByNumber, assessTransferRisk, idempotencyRefs, err, MAX_AMOUNT };

@@ -80,4 +80,19 @@ Access Control	The platform shall enforce the Principle of Least Privilege throu
 Secret Management	Hardcoded credentials and database connection strings are strictly prohibited in source code; all secrets must be fetched dynamically from Secret Manager at runtime.
 Deployment Model	Builds and container deployments shall be managed via direct Google Cloud CLI commands (gcloud builds submit and gcloud run deploy).
  
- 
+ 24/oct
+Act as a backend developer working on this Cloud Bank repository. 
+
+I need to showcase the platform's rule-based fraud detection feature during a live demo. Please help me create a dedicated simulation script or a new endpoint `/api/demo/simulate-fraud` in `backend/src/server.js` that triggers deterministic fraud risk signals.
+
+Requirements for the fraud simulation:
+1. Follow the fraud scoring rules defined in `shared/ledger.js`:
+   - High-value transfer (>= ₹50,000): Score +60 (HIGH risk level)
+   - Rapid repeated transactions: Trigger 3 consecutive outgoing transfers within 2 minutes to trigger the velocity signal (+35 points)
+   - First-time recipient in history window: (+10 points)
+2. Ensure the transfers execute inside the existing atomic Firestore transaction (`db.runTransaction`) using standard integer paise for amounts.
+3. Keep the transfer execution non-blocking (do NOT reject or block valid transfers when high risk is calculated; retain normal success status and include the `risk` object in the response).
+4. Persist the generated `risk_score`, `risk_level`, and `risk_reasons` to Firestore and publish the event to Pub/Sub topic `transaction-completed` so `auditFunction` streams it to BigQuery.
+5. Include inline code comments explaining how each rule is triggered so I can explain it during my presentation.
+
+Please generate the required backend handler code in `backend/src/server.js` and a helper script in `loadtest/simulate-fraud.js` that calls this endpoint.

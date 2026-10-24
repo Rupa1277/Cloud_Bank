@@ -99,6 +99,59 @@ app.post('/api/transfer', auth, wrap(async (req, res) => {
   if (r.event) await publish(TOPIC_TX, r.event);          // async fan-out: notify + audit
   res.status(200).json(strip(r));
 }));
+app.post('/api/demo/simulate-fraud', auth, requireRole('admin'), wrap(async (req, res) => {
+  if (process.env.DEMO_FRAUD_SIMULATION_ENABLED !== 'true') {
+    throw ledger.err(404, 'Fraud simulation is disabled');
+  }
+
+  const accountNumber = String(req.body?.recipientAccount || '').trim().toUpperCase();
+  if (!accountNumber) throw ledger.err(400, 'recipientAccount is required');
+  const key = idemKey(req);
+  // The default INR 50,000 amount activates the high-value signal; a smaller amount can isolate velocity scoring.
+  const amount = toPaise(req.body?.amount ?? 50000);
+  if (amount > ledger.MAX_AMOUNT) throw ledger.err(400, 'Amount exceeds the per-transaction limit of INR 1,00,000');
+
+  const recipient = await ledger.findAccountByNumber(db, accountNumber);
+  if (!recipient) throw ledger.err(404, 'Recipient account not found');
+  if (recipient.id === req.user.uid) throw ledger.err(400, 'Recipient must be another account');
+
+  const runKey = crypto.createHash('sha256').update(`${req.user.uid}:${key}`).digest('hex').slice(0, 40);
+  const replayRefs = Array.from({ length: 3 }, (_, index) =>
+    ledger.idempotencyRefs(db, req.user.uid, 'transfer', `fraud_demo_${runKey}_${index + 1}`).current);
+  const replaySnapshots = await Promise.all(replayRefs.map((ref) => ref.get()));
+  const transfersRemaining = replaySnapshots.filter((snapshot) => !snapshot.exists).length;
+  const sender = await db.doc(`accounts/${req.user.uid}`).get();
+  if (!sender.exists) throw ledger.err(404, 'Your account was not found');
+  if (sender.data().balance < amount * transfersRemaining) {
+    throw ledger.err(400, `The demo needs enough simulated balance for ${transfersRemaining} remaining transfer(s)`);
+  }
+
+  const results = [];
+  const events = [];
+  for (let index = 1; index <= 3; index += 1) {
+    // Reusing one recipient and sending serially makes transfer three see two prior transfers inside two minutes.
+    const result = await ledger.transfer(db, {
+      fromUid: req.user.uid,
+      toAccountNumber: accountNumber,
+      amount,
+      note: `Fraud demo ${index}/3`,
+      idempotencyKey: `fraud_demo_${runKey}_${index}`,
+      source: 'FRAUD_DEMO',
+    });
+    if (result.event) events.push(result.event);
+    results.push({
+      txId: result.txId, status: result.status, amount: result.amount,
+      duplicate: Boolean(result.duplicate), risk: result.risk,
+    });
+  }
+
+  await Promise.all(events.map((event) => publish(TOPIC_TX, event)));
+  res.status(200).json({
+    simulation: 'completed',
+    transfers: results,
+    note: 'Simulated transfers are not blocked. This rule-based risk signal is for demonstration only.',
+  });
+}));
 for (const [path, type] of [['deposit', 'DEPOSIT'], ['withdraw', 'WITHDRAWAL']]) {
   app.post(`/api/${path}`, auth, wrap(async (req, res) => {
     const r = await ledger.cash(db, { uid: req.user.uid, amount: toPaise(req.body.amount), type, idempotencyKey: idemKey(req) });

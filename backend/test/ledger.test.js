@@ -94,6 +94,59 @@ test('risk scoring detects rapid transfers and large deviations from recent acti
   assert.equal(risk.reasons.length, 4);
 });
 
+test('velocity signal triggers on the third transfer inside two minutes', () => {
+  const now = 1000000;
+  const risk = ledger.assessTransferRisk({
+    amount: 10000,
+    toUid: 'recipient',
+    recent: [
+      { toUid: 'recipient', amount: 10000, createdAtMs: now - 60000 },
+      { toUid: 'recipient', amount: 10000, createdAtMs: now - 90000 },
+    ],
+    now,
+  });
+
+  assert.equal(risk.score, 35);
+  assert.equal(risk.level, 'MEDIUM');
+  assert.deepEqual(risk.reasons, ['Multiple transfers within a short time']);
+});
+
+test('velocity signal ignores transfers older than the two-minute window', () => {
+  const now = 1000000;
+  const risk = ledger.assessTransferRisk({
+    amount: 10000,
+    toUid: 'recipient',
+    recent: [
+      { toUid: 'recipient', amount: 10000, createdAtMs: now - 121000 },
+      { toUid: 'recipient', amount: 10000, createdAtMs: now - 180000 },
+    ],
+    now,
+  });
+
+  assert.deepEqual(risk, { score: 0, level: 'LOW', reasons: [] });
+});
+
+test('three serial transfers produce a velocity signal on the third transfer', async () => {
+  const db = fakeDb(accountDocs);
+  const results = [];
+  for (let index = 1; index <= 3; index += 1) {
+    results.push(await ledger.transfer(db, {
+      fromUid: 'sender',
+      toAccountNumber: 'CB0000000002',
+      amount: 10000,
+      idempotencyKey: `demo-velocity-${index}`,
+      source: 'FRAUD_DEMO',
+    }));
+  }
+
+  assert.equal(results[0].risk.level, 'LOW');
+  assert.equal(results[1].risk.level, 'LOW');
+  assert.equal(results[2].risk.score, 35);
+  assert.equal(results[2].risk.level, 'MEDIUM');
+  assert.deepEqual(results[2].risk.reasons, ['Multiple transfers within a short time']);
+  assert.equal(db.docs.get('riskSignals/sender').recent.length, 3);
+});
+
 test('ordinary repeat transfers remain low risk', () => {
   const now = 1000000;
   const risk = ledger.assessTransferRisk({
@@ -125,6 +178,9 @@ test('high-risk signals are saved with a completed transfer and its retry record
   assert.equal(recent[0].amount, 5000000);
   const tx = [...db.docs.entries()].find(([path]) => path.startsWith('transactions/'))[1];
   assert.deepEqual(tx.risk, result.risk);
+  assert.equal(tx.risk_score, result.risk.score);
+  assert.equal(tx.risk_level, result.risk.level);
+  assert.deepEqual(tx.risk_reasons, result.risk.reasons);
 });
 
 test('transfer retries return the original response and event without repeating ledger writes', async () => {
