@@ -34,12 +34,10 @@ Cloud Run and Cloud Functions are configured to scale from zero. IAM service acc
 ### Customer
 
 - Sign up and sign in with Firebase email/password authentication.
-- Initialize an account with a simulated INR 10,000 welcome balance.
+- Complete format-validated KYC onboarding; an active demo account receives a simulated INR 1,000 opening balance.
 - View account details and balance.
-- Transfer simulated funds to another Cloud Bank account.
-- Deposit and withdraw simulated funds.
+- Verify a recipient by Cloud Bank account number or linked Indian mobile number, then transfer simulated funds.
 - View the latest 50 transactions, with the customer's own risk signal shown only on outgoing transfers.
-- See in-app transaction notifications.
 - Request monthly PDF statements and download ready statements using time-limited signed URLs.
 - Create, view, and cancel recurring standing orders.
 - Review personal transfer-risk alerts in the **Security** view.
@@ -84,7 +82,9 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 
 ### Behavior and presentation
 
-- Risk assessment does **not** block, delay, or reject a valid transfer.
+- LOW-risk transfers continue directly. MEDIUM/HIGH transfers pause before ledger writes and require the sender to explicitly allow or block them.
+- Approval is bound to the same idempotency key and transfer details; the backend recalculates risk atomically before debit/credit. If risk changes while confirmation is pending, the updated score/reasons are shown and a fresh decision is required.
+- A block writes an auditable `TRANSFER_BLOCKED` record/event without debiting the sender or crediting the recipient. Pending confirmations expire after five minutes.
 - The successful response retains normal transfer status and includes a `risk` object. Firestore transaction documents also store `risk_score`, `risk_level`, and `risk_reasons` fields.
 - Risk history is updated atomically with the completed transfer and idempotency record.
 - The Security view shows flagged outgoing transfers returned in the user's transaction history.
@@ -97,19 +97,29 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 ### Suggested manual demonstration
 
 1. Create/sign in to two test accounts and note the recipient's account number.
-2. Use the simulated deposit function to give the sender enough balance for the desired test.
-3. Send INR 50,000 or more to produce a high-value signal, if account balance permits.
-4. Review the transfer response and the sender's Security view.
-5. Sign in as an administrator to review recent non-low signals in Admin.
-6. For a repeated-transfer demonstration, use the Admin **Run live fraud demo** action or the optional admin-only endpoint below to execute three outgoing transfers in sequence; review the displayed transaction IDs and scores. At the default amount and with a clean history, the third transfer should match the two-minute velocity rule.
+2. Complete the onboarding form with synthetic test details; a newly activated test account gets INR 1,000.
+3. Use only a separately funded, approved test account for high-value fraud demonstrations; the endpoint executes actual simulated ledger transfers.
+4. Verify a recipient by account number or phone and review the recipient name and masked account number before sending.
+5. Review the transfer response and the sender's Security view.
+6. Sign in as an administrator to review recent non-low signals in Admin.
+7. For a repeated-transfer demonstration, use the Admin **Run live fraud demo** action or the optional admin-only endpoint below to execute three outgoing transfers in sequence; review the displayed transaction IDs and scores. At the default amount and with a clean history, the third transfer should match the two-minute velocity rule.
 
-Deposits, withdrawals, transfers, and welcome balances are simulated; clearly state this during demonstrations.
+Opening balances and transfers are simulated; clearly state this during demonstrations.
+
+## KYC onboarding and transfer verification
+
+- New accounts begin as `PENDING_VERIFICATION` with a zero balance. A valid full name, 10-digit Indian mobile, PAN format, and supported address-proof type/format are required before activation.
+- On activation, the account receives the simulated INR 1,000 opening balance exactly once. This demo permits the balance to reach zero and prevents overdrafts; it does not reserve the opening amount as a permanent floor. Real minimum-balance rules vary by bank and account type.
+- The KYC HMAC key is supplied to Cloud Run from Secret Manager as `KYC_HMAC_SECRET`. Firestore stores keyed HMAC identifiers and masked values, not PAN, phone, or proof numbers. Do not rotate this key without a planned index/data migration; phone lookups depend on stable hashes.
+- Phone recipient lookup uses the `phone_to_account` HMAC-keyed index, and account lookup uses `accountNumbers`; index writes are atomic with account initialization. Recipient verification reveals the name and masked account number only for a different active account.
+- The onboarding form performs format validation only. It does not validate identity against government records, perform AML/sanctions checks, collect verified documents, or satisfy real-bank KYC. Use synthetic data only. The optional photo field accepts a private Cloud Storage URL reference; it is not an upload/verification workflow.
+- Deposits and withdrawals are no longer exposed in the customer dashboard. Legacy API routes remain for controlled development/administrative use and must not be treated as a customer funding rail.
 
 ## Important data and transaction behavior
 
 - All amounts are stored as integer paise (100 paise = INR 1).
 - The maximum amount per ledger operation is INR 1,00,000.
-- Transfers update sender and recipient balances, write a transaction, save an idempotency response/event, and update sender risk history inside one Firestore transaction.
+- Transfers resolve the recipient and read sender, recipient, idempotency, and risk state before writing. Sender debit, recipient credit, transaction, idempotency record, and risk history commit in one Firestore transaction. A thrown validation/transaction error aborts the whole transaction; a separate `transferAttempts` record and `TRANSFER_FAILED` audit event are written for known failed attempts. A committed debit is never labeled "refunded" unless a separate compensating credit actually occurs.
 - Recurring orders store their scheduled occurrence as `nextRunAt`; daily and weekly orders advance by calendar days and monthly orders retain the intended day-of-month, clamped to the last day of shorter months.
 - A recurring transfer uses the standard ledger transaction and a stable idempotency key derived from the order ID and scheduled occurrence. A failed payment remains due and is retried on the next daily scheduler run; successful payments advance the schedule. Cancellation marks the order inactive rather than deleting its history.
 - Idempotency is operation-scoped and hashed. Retrying the same request should return the prior result and must not debit twice.
@@ -156,14 +166,15 @@ All application API routes except `/api/health` require a valid Firebase ID toke
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/health` | API health check. |
-| POST | `/api/account/init` | Create the authenticated user's account if missing and initialize a customer role claim. |
+| POST | `/api/account/init` | Atomically create/update the authenticated user's account and KYC state; activates and credits the simulated opening balance only after required fields validate. |
 | GET | `/api/account` | Fetch the current user's account. |
-| POST | `/api/transfer` | Atomic peer-to-peer transfer; requires an `Idempotency-Key`. |
+| POST | `/api/transfer` | Atomic peer-to-peer transfer by `recipientAccount` or `recipientPhone`; requires an `Idempotency-Key`. MEDIUM/HIGH risk returns a confirmation ID; repeat with `riskDecision` (`ALLOW`/`BLOCK`) and that ID. |
+| POST | `/api/transfer/verify-recipient` | Verify an active recipient by account number or phone; returns a name and masked account number. |
 | POST | `/api/demo/simulate-fraud` | Admin-only demo endpoint; requires the `DEMO_FRAUD_SIMULATION_ENABLED=true` environment flag, an `Idempotency-Key`, and a different recipient account. Executes three serial transfers through the existing atomic ledger path. |
-| POST | `/api/deposit` | Simulated deposit; requires an `Idempotency-Key`. |
-| POST | `/api/withdraw` | Simulated withdrawal; requires an `Idempotency-Key`. |
+| POST | `/api/deposit` | Legacy simulated deposit route; not exposed in the customer dashboard. |
+| POST | `/api/withdraw` | Legacy simulated withdrawal route; not exposed in the customer dashboard. |
 | GET | `/api/transactions` | Current user's latest 50 transactions. |
-| GET | `/api/notifications` | Current user's latest in-app notifications. |
+| GET | `/api/notifications` | Legacy in-app notification API; notification widget removed from the customer dashboard. |
 | POST | `/api/statements` | Request a PDF statement for a `YYYY-MM` month. |
 | GET | `/api/statements` | List the current user's recent statements. |
 | GET | `/api/statements/:id/download` | Get a signed download URL for a ready statement owned by the current user. |
@@ -190,7 +201,7 @@ All application API routes except `/api/health` require a valid Firebase ID toke
 | Cloud Storage | Private generated PDF statements. |
 | BigQuery | `cloudbank_audit.transactions_audit`, including transfer risk fields. |
 | Cloud Scheduler | Daily 09:00 Asia/Kolkata recurring-payment retry/processing job and monthly statement job. |
-| Secret Manager | Optional notification webhook secret; no secret values belong in source control. |
+| Secret Manager | Notification webhook secret and KYC HMAC key; no secret values belong in source control. |
 | Looker Studio | Optional dashboard connected to BigQuery audit data. |
 
 ## Local development and validation
@@ -237,7 +248,7 @@ From Cloud Shell (Linux shell):
 
 ### Important BigQuery schema migration note
 
-The audit schema now contains `risk_score`, `risk_level`, and `risk_reasons`. BigQuery does not permit removing or changing arbitrary existing fields through `bq update --schema`; adding new nullable fields is normally compatible. If updating an existing table fails, inspect its schema and apply a supported additive schema update rather than dropping or recreating the audit table (which could destroy audit history). Validate the exact GCP CLI behavior before running provisioning commands on a project with existing data.
+The audit schema contains `risk_score`, `risk_level`, `risk_reasons`, `status`, and `failure_code`. BigQuery does not permit removing or changing arbitrary existing fields through `bq update --schema`; adding new nullable fields is normally compatible. If updating an existing table fails, inspect its schema and apply a supported additive schema update rather than dropping or recreating the audit table (which could destroy audit history). Validate the exact GCP CLI behavior before running provisioning commands on a project with existing data.
 
 Never run teardown or destructive data/resource operations without explicit human approval and a backup/impact check.
 
@@ -247,7 +258,7 @@ The endpoint is disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true` is explicit
 
 The endpoint accepts `{ "recipientAccount": "CB...", "amount": 50000 }` where `amount` is INR and defaults to ₹50,000. It generates three serial transfers to the same recipient with an idempotency key derived from the caller's `Idempotency-Key`. Each transfer uses the normal ledger transaction, records the risk object, and publishes its transaction event. At the default amount and with a clean recent history, expected scores are 70, 60, and 95. A high-value demo requires enough simulated sender funds for all three transfers (₹1,50,000 at the default amount). The simulation is not a single all-or-nothing batch: each individual transfer is atomic. Do not invoke it against accounts/data unless the demo operator expects these simulated ledger entries.
 
-The Node 20 helper `loadtest/simulate-fraud.js` signs in through Firebase Authentication and calls the endpoint. Set these environment variables locally; do not commit them:
+The Node 22 helper `loadtest/simulate-fraud.js` signs in through Firebase Authentication and calls the endpoint. Set these environment variables locally; do not commit them:
 
 - `CLOUDBANK_BASE_URL` — deployed Firebase Hosting URL or Cloud Run API URL.
 - `FIREBASE_API_KEY` — Firebase Web API key for the project.
@@ -296,9 +307,21 @@ Use this project context before proposing code or commands:
 - The fraud system is rule-based, deterministic, not calibrated on real data, and should not be used to make real customer decisions.
 - Admin alerts scan only the latest 100 transaction records.
 - Risk history keeps the latest 20 outgoing transfers within a rolling 24-hour window.
-- Transfers complete even when a risk level is HIGH; there is no review/hold workflow.
-- No MFA, KYC, external bank rails, or real-money processing.
+- Risk scores are demo rules, not a validated fraud model; there is no OTP/step-up authentication or human-review workflow.
+- KYC currently validates input formats and protects identifiers with keyed hashes; it does not verify government records or documents. No MFA, external bank rails, or real-money processing.
 - Pub/Sub publish occurs after the ledger commit; a transactional outbox would improve reliability.
 - Local frontend development currently has no Vite `/api` proxy or local backend emulator setup.
 - BigQuery insert de-duplication via `insertId` is best effort, not a replacement for a fully idempotent audit pipeline.
 - Cost targets depend on usage, quotas, region, free-tier eligibility, and retained resources; verify actual billing rather than assuming zero cost.
+
+## Architectural gaps and enterprise remedies
+
+These are design recommendations, not implemented enterprise controls. Cloud Bank remains an academic simulated-money application; production adoption requires security, privacy, compliance, availability, and cost review.
+
+| Current gap | Enterprise remedy |
+|---|---|
+| **Database/Pub/Sub dual write:** transaction publishing happens after the Firestore commit, so a process crash in between can lose notification and audit events. | Write a durable event to a Firestore `outbox` collection in the same ledger transaction. Deliver with a Firestore-triggered worker/Eventarc integration; make consumers idempotent and mark/retry outbox delivery. |
+| **Recipient phone lookup dependency:** the implementation maintains an HMAC-keyed `phone_to_account` index, but uses Firestore as the synchronous lookup store and retains a query fallback for older account-number records. | Keep a dedicated, strongly consistent phone-to-account index (the current collection is an initial version), define key rotation and uniqueness policies, and measure contention/latency. Do not put phone numbers in document paths. |
+| **BigQuery audit de-duplication:** streaming inserts use `insertId`, which is best effort. | Use the BigQuery Storage Write API with committed streams and offsets where appropriate, or stage events and run scheduled SQL `MERGE` jobs keyed by transaction ID. |
+| **KYC proof/photo verification:** the current flow validates formats and stores HMAC hashes/masked strings; an optional URL is metadata, not verified evidence. | Use a private Cloud Storage bucket with short-lived upload/download authorization, retention and access controls; integrate Document AI or a regulated KYC provider, with explicit consent, review, and compliance controls. Keep raw identity material out of logs and general account documents. |
+| **Failed transfer semantics:** Firestore aborts uncommitted writes atomically; there is no separate compensating refund for a transaction that never committed. | Add reconciliation and operational alerting for ambiguous commit outcomes. Use an idempotent compensating transaction only after confirming a debit committed; do not label an aborted transfer `REFUNDED`. |

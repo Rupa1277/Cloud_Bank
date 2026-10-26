@@ -1,5 +1,7 @@
 // Demo helper: signs in with Firebase, then asks the protected admin endpoint
 // to make three real ledger transfers using simulated Cloud Bank balances.
+// The default INR 50,000 amount demonstrates the high-value signal and the
+// serial third transfer demonstrates velocity; DEMO_AMOUNT_INR can override it.
 const { randomUUID } = require('node:crypto');
 
 const required = ['CLOUDBANK_BASE_URL', 'FIREBASE_API_KEY', 'DEMO_EMAIL', 'DEMO_PASSWORD', 'DEMO_RECIPIENT_ACCOUNT'];

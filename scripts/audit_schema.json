@@ -1,4 +1,5 @@
 [{"name":"tx_id","type":"STRING","mode":"REQUIRED"},{"name":"type","type":"STRING"},{"name":"from_uid","type":"STRING"},{"name":"to_uid","type":"STRING"},
 {"name":"from_account","type":"STRING"},{"name":"to_account","type":"STRING"},{"name":"amount_paise","type":"INTEGER"},{"name":"source","type":"STRING"},
 {"name":"risk_score","type":"INTEGER"},{"name":"risk_level","type":"STRING"},{"name":"risk_reasons","type":"STRING"},
+{"name":"status","type":"STRING"},{"name":"failure_code","type":"STRING"},
 {"name":"occurred_at","type":"TIMESTAMP"},{"name":"ingested_at","type":"TIMESTAMP"}]

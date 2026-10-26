@@ -51,6 +51,7 @@ functions.cloudEvent('auditFunction', async (ce) => {
     from_account: e.fromAccount, to_account: e.toAccount, amount_paise: e.amount, source: e.source || 'API',
     risk_score: e.risk?.score ?? 0, risk_level: e.risk?.level || 'LOW',
     risk_reasons: e.risk?.reasons?.join(' | ') || '',
+    status: e.status || 'COMPLETED', failure_code: e.failureCode || null,
     occurred_at: e.occurredAt, ingested_at: new Date().toISOString() };
   await bigquery.dataset(DATASET).table(TABLE).insert([{ insertId: e.txId, json: row }], { raw: true });  // insertId = best-effort de-dup
   console.log(`audit row written for ${e.txId}`);

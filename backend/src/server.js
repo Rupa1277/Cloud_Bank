@@ -15,7 +15,6 @@ const storage = new Storage();
 const BUCKET = process.env.STATEMENT_BUCKET;
 const TOPIC_TX = process.env.TOPIC_TX || 'transaction-completed';
 const TOPIC_STMT = process.env.TOPIC_STMT || 'statement-requests';
-const WELCOME_BONUS = 1000000;               // simulated INR 10,000 starting balance (paise)
 
 const app = express();
 app.disable('x-powered-by');
@@ -69,42 +68,65 @@ app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toI
 
 // ---- Account ----
 app.post('/api/account/init', auth, wrap(async (req, res) => {
-  const ref = db.doc(`accounts/${req.user.uid}`);
-  if (!(await ref.get()).exists) {
-    let number;
-    do { number = 'CB' + String(crypto.randomInt(0, 1e10)).padStart(10, '0'); }
-    while (await ledger.findAccountByNumber(db, number));
-    try {
-      await ref.create({
-        ownerName: String(req.body.name || '').trim().slice(0, 60) || (req.user.email || 'user').split('@')[0],
-        email: req.user.email, accountNumber: number, balance: WELCOME_BONUS, createdAt: FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      if (e.code !== 6 && e.code !== 'already-exists') throw e;
-    }
-  }
+  const initialized = await ledger.initializeAccount(db, {
+    uid: req.user.uid,
+    email: req.user.email,
+    profile: req.body || {},
+    kycSecret: process.env.KYC_HMAC_SECRET,
+  });
   const u = await admin.auth().getUser(req.user.uid);
   if (!u.customClaims || !u.customClaims.role) {
     await admin.auth().setCustomUserClaims(req.user.uid, { ...u.customClaims, role: 'customer' });
   }
-  res.json({ ok: true });
+  res.json({ ...initialized.account, kycErrors: initialized.kycErrors });
 }));
 
 app.get('/api/account', auth, wrap(async (req, res) => {
-  const s = await db.doc(`accounts/${req.user.uid}`).get();
-  if (!s.exists) return res.status(404).json({ error: 'Account not initialised' });
-  const { ownerName, email, accountNumber, balance } = s.data();
-  res.json({ ownerName, email, accountNumber, balance, role: req.user.role });
+  const ref = db.doc(`accounts/${req.user.uid}`);
+  const snapshot = await ref.get();
+  const savedAccount = snapshot.exists ? snapshot.data() : null;
+  const account = savedAccount?.accountStatus
+    ? ledger.publicAccount(savedAccount)
+    : (await ledger.initializeAccount(db, {
+      uid: req.user.uid, email: req.user.email, profile: {},
+    })).account;
+  res.json({ ...account, role: req.user.role });
 }));
 
 // ---- Money movement ----
 app.post('/api/transfer', auth, wrap(async (req, res) => {
   const r = await ledger.transfer(db, {
-    fromUid: req.user.uid, toAccountNumber: String(req.body.toAccount || '').trim().toUpperCase(),
+    fromUid: req.user.uid,
+    toAccountNumber: String(req.body.recipientAccount || req.body.toAccount || '').trim().toUpperCase() || undefined,
+    toPhone: String(req.body.recipientPhone || '').trim() || undefined,
+    kycSecret: process.env.KYC_HMAC_SECRET,
     amount: toPaise(req.body.amount), note: req.body.note || '', idempotencyKey: idemKey(req),
+    riskDecision: req.body.riskDecision,
+    riskConfirmationId: req.body.riskConfirmationId,
+    onFailure: (event) => publish(TOPIC_TX, event),
   });
+  if (r.confirmationRequired) return res.status(202).json(strip(r));
+  if (r.confirmationExpired) return res.status(409).json({ error: 'Risk confirmation expired. Please start the transfer again.' });
   if (r.event) await publish(TOPIC_TX, r.event);          // async fan-out: notify + audit
   res.status(200).json(strip(r));
+}));
+app.post('/api/transfer/verify-recipient', auth, wrap(async (req, res) => {
+  const accountNumber = String(req.body.recipientAccount || '').trim().toUpperCase();
+  const phone = String(req.body.recipientPhone || '').trim();
+  if (Boolean(accountNumber) === Boolean(phone)) {
+    throw ledger.err(400, 'Provide exactly one recipient account number or phone number');
+  }
+  const recipient = await ledger.findRecipient(db, {
+    accountNumber: accountNumber || undefined,
+    phone: phone || undefined,
+    kycSecret: process.env.KYC_HMAC_SECRET,
+  });
+  const valid = recipient && recipient.id !== req.user.uid && recipient.data().accountStatus !== 'PENDING_VERIFICATION';
+  res.json({
+    isValid: Boolean(valid),
+    recipientName: valid ? recipient.data().ownerName : null,
+    accountNumberMasked: valid ? ledger.maskAccountNumber(recipient.data().accountNumber) : null,
+  });
 }));
 app.post('/api/demo/simulate-fraud', auth, requireRole('admin'), wrap(async (req, res) => {
   if (process.env.DEMO_FRAUD_SIMULATION_ENABLED !== 'true') {
@@ -114,7 +136,7 @@ app.post('/api/demo/simulate-fraud', auth, requireRole('admin'), wrap(async (req
   const accountNumber = String(req.body?.recipientAccount || '').trim().toUpperCase();
   if (!accountNumber) throw ledger.err(400, 'recipientAccount is required');
   const key = idemKey(req);
-  // The default INR 50,000 amount activates the high-value signal; a smaller amount can isolate velocity scoring.
+  // INR 50,000 is converted to 5,000,000 paise, activating the ledger's +60 high-value rule (HIGH by itself).
   const amount = toPaise(req.body?.amount ?? 50000);
   if (amount > ledger.MAX_AMOUNT) throw ledger.err(400, 'Amount exceeds the per-transaction limit of INR 1,00,000');
 
@@ -136,15 +158,31 @@ app.post('/api/demo/simulate-fraud', auth, requireRole('admin'), wrap(async (req
   const results = [];
   const events = [];
   for (let index = 1; index <= 3; index += 1) {
-    // Reusing one recipient and sending serially makes transfer three see two prior transfers inside two minutes.
-    const result = await ledger.transfer(db, {
+    // A recipient absent from the sender's 24-hour history adds +10 on transfer one.
+    // Reusing the same recipient avoids adding that first-time-recipient signal again on later transfers.
+    // Each successful transfer appends history atomically; transfer three sees two recent transfers and adds +35 velocity.
+    let result = await ledger.transfer(db, {
       fromUid: req.user.uid,
       toAccountNumber: accountNumber,
       amount,
       note: `Fraud demo ${index}/3`,
       idempotencyKey: `fraud_demo_${runKey}_${index}`,
       source: 'FRAUD_DEMO',
+      onFailure: (event) => publish(TOPIC_TX, event),
     });
+    if (result.confirmationRequired) {
+      result = await ledger.transfer(db, {
+        fromUid: req.user.uid,
+        toAccountNumber: accountNumber,
+        amount,
+        note: `Fraud demo ${index}/3`,
+        idempotencyKey: `fraud_demo_${runKey}_${index}`,
+        source: 'FRAUD_DEMO',
+        riskDecision: 'ALLOW',
+        riskConfirmationId: result.confirmationId,
+        onFailure: (event) => publish(TOPIC_TX, event),
+      });
+    }
     if (result.event) events.push(result.event);
     results.push({
       txId: result.txId, status: result.status, amount: result.amount,

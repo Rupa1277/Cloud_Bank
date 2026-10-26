@@ -23,6 +23,8 @@ bq mk -t "$PROJECT_ID:$DATASET.transactions_audit" "$ROOT/scripts/audit_schema.j
 bq update --schema "$ROOT/scripts/audit_schema.json" "$PROJECT_ID:$DATASET.transactions_audit"
 echo "== Secret Manager (notification webhook; replace the placeholder later if you want live alerts)"
 printf 'none' | gcloud secrets create notify-webhook-url --data-file=- --replication-policy=automatic 2>/dev/null || echo "   (secret exists)"
+echo "== Secret Manager (KYC HMAC key; never print or commit this value)"
+openssl rand -hex 32 | gcloud secrets create kyc-hmac-secret --data-file=- --replication-policy=automatic 2>/dev/null || echo "   (secret exists)"
 echo "== Service accounts (one per component = least privilege)"
 for s in bank-api-sa bank-notify-sa bank-audit-sa bank-statement-sa bank-batch-sa; do
   gcloud iam service-accounts create "$s" --display-name="Cloud Bank $s" 2>/dev/null || echo "   ($s exists)"; done
@@ -37,6 +39,7 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAc
 # API signs download URLs as itself (v4 signed URLs on Cloud Run need signBlob permission on its own identity)
 gcloud iam service-accounts add-iam-policy-binding "$(sa bank-api-sa)" --member="serviceAccount:$(sa bank-api-sa)" --role=roles/iam.serviceAccountTokenCreator --quiet >/dev/null
 gcloud secrets add-iam-policy-binding notify-webhook-url --member="serviceAccount:$(sa bank-notify-sa)" --role=roles/secretmanager.secretAccessor --quiet >/dev/null
+gcloud secrets add-iam-policy-binding kyc-hmac-secret --member="serviceAccount:$(sa bank-api-sa)" --role=roles/secretmanager.secretAccessor --quiet >/dev/null
 bq add-iam-policy-binding --member="serviceAccount:$(sa bank-audit-sa)" --role=roles/bigquery.dataEditor "$PROJECT_ID:$DATASET.transactions_audit" >/dev/null 2>&1 \
   || add bank-audit-sa roles/bigquery.dataEditor
 echo "== Build/deploy permissions for the default compute service account"

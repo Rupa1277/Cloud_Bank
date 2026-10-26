@@ -38,14 +38,14 @@ cp frontend/.env.example frontend/.env && nano frontend/.env     # paste the 4 F
 npx --yes firebase-tools@latest login --no-localhost            # follow the link, paste the code back
 ./scripts/04-deploy-frontend.sh    # builds React + deploys to Firebase Hosting + Firestore deny-all rules
 ```
-The Cloud Functions deploy script uses the Node.js 22 runtime. If a function was previously deployed with Node.js 20, redeploy it with `./scripts/03-deploy-functions.sh` before the Node.js 20 runtime is decommissioned.
+The Cloud Run API container and Cloud Functions use Node.js 22.
 Your app is at **https://<project-id>.web.app**.
 (If `01` prints a permission or "not enabled" warning, wait 1 minute and re-run it. It is safe to repeat.)
 
 ## 3. Test it end to end (this is your demo script)
-1. Open the site → **Sign up** user A, then in a private window sign up user B. Each starts with a simulated ₹10,000.
-2. Copy B's **account number** (CB…). As A: **Send money** → B's number, ₹500. The balance updates instantly (**sync path**).
-3. Within seconds both users see 🔔 notifications (**async path**: Pub/Sub → notifyFunction). Check B's balance and history.
+1. Open the site → **Sign up** user A, then in a private window sign up user B. Complete the required KYC-format fields; each verified demo account receives a simulated ₹1,000 opening balance.
+2. Verify B by **account number** or **mobile phone** and send ₹500. Recipient name and masked account number are previewed before transfer; the balance updates instantly (**sync path**).
+3. The transaction event is published asynchronously to the notification and audit subscribers. In-app notifications are still stored in Firestore, but are not shown in the customer dashboard; check B's balance and history and review BigQuery audit rows.
 4. **Idempotency (FR-04)**: in the browser DevTools → Network, right-click the `transfer` request → *Copy as cURL*, run it twice in Cloud Shell.
    Second response has `"duplicate": true` and the balance is charged once.
 5. **Statements (FR-08)**: *Statements → Generate* → status goes PENDING → READY → **Download** opens the PDF via a 10-minute signed URL.
@@ -55,13 +55,13 @@ Your app is at **https://<project-id>.web.app**.
 8. **Admin roles and audit (FR-02/09)**: bootstrap the first administrator, then sign out/in:
    `cd backend && npm install && GCP_PROJECT_ID=$GCP_PROJECT_ID node ../scripts/set-admin.js admin@example.com && cd ..` (the user must have signed up first).
    An *Admin* tab appears with platform metrics, recent risk signals, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
-9. **Fraud-detection showcase**: the optional demo endpoint is disabled by default and only available to an administrator. Before enabling it, confirm the admin account has at least ₹1,50,000 simulated balance and set up a different recipient account. Temporarily enable the endpoint:
+9. **Fraud-detection showcase**: the optional demo endpoint is disabled by default and only available to an administrator. Before enabling it, prepare a funded admin test account with at least ₹1,50,000 simulated balance and set up a different active recipient account. Temporarily enable the endpoint:
    `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=true`
    Then either use the **Run live fraud demo** control in the Admin tab or run the helper from the repository root, setting the environment variables in PowerShell (`CLOUDBANK_BASE_URL`, `FIREBASE_API_KEY`, `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_RECIPIENT_ACCOUNT`):
    `node loadtest/simulate-fraud.js`
-   Either option executes three actual ledger transfers of simulated funds (₹50,000 each), displays their transaction IDs and risk scores, and refreshes the Admin risk alerts. The third transfer should show the velocity signal (+35); the high-value rule also applies. If the helper's response is interrupted, rerun it with the printed `DEMO_IDEMPOTENCY_KEY` to resume the same scenario without duplicate charges. Review **Security**, **Admin**, and the BigQuery audit table, then disable the endpoint:
+   Either option executes three actual ledger transfers of simulated funds (₹50,000 each), displays their transaction IDs and risk scores, and refreshes the Admin risk alerts. The demo's explicit run action approves its flagged simulation transfers. Ordinary customer MEDIUM/HIGH transfers pause before money moves and require the sender to choose **Allow payment** or **Block payment**. If the helper's response is interrupted, rerun it with the printed `DEMO_IDEMPOTENCY_KEY` to resume the same scenario without duplicate charges. Review **Security**, **Admin**, and the BigQuery audit table, then disable the endpoint:
    `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=false`
-   Alternatively set the recipient and `DEMO_AMOUNT_INR` (maximum ₹1,00,000 per transfer; sender needs 3× that amount). This is an explainable, rule-based demonstration: transfers are not blocked and the score is not a production/ML fraud verdict.
+   Alternatively set the recipient and `DEMO_AMOUNT_INR` (maximum ₹1,00,000 per transfer; sender needs 3× that amount). This is an explainable, rule-based demonstration; risk scores are not a production/ML fraud verdict.
 
 ## 4. Looker Studio dashboard (FR-09)
 lookerstudio.google.com → *Create → Report → BigQuery* → project → `cloudbank_audit` → `transactions_audit` → Add.
@@ -87,7 +87,7 @@ it rises from 0/1 to several (max 10) and falls back to **0** a few minutes afte
 | No duplicate charges (FR-04) | `Idempotency-Key` header → `idempotency/{uid_key}` doc checked inside the same transaction |
 | Immediate response + async fan-out (FR-05/06) | publish after commit, 3 independent subscribers |
 | Private statements (FR-08) | bucket with public-access-prevention + uniform access; V4 signed URLs (10 min) |
-| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency (third transfer within two minutes), amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. The Admin live demo and `loadtest/simulate-fraud.js` both call the admin-only `/api/demo/simulate-fraud` endpoint, disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true`; they execute real ledger transfers using simulated money. Informational only; no automatic blocking or ML. |
+| Fraud-detection showcase | `shared/ledger.js` scores transfers using amount, recent transfer frequency, amount deviation, and recipient history. MEDIUM/HIGH customer transfers require explicit sender approval before debit/credit; a decline records an audit event without moving funds. Scores/reasons flow to Security, admin alerts and BigQuery. The admin demo endpoint requires `DEMO_FRAUD_SIMULATION_ENABLED=true`; its explicit run action auto-approves the demo's simulated transfers. Informational rules only; not a validated fraud model. |
 | Recurring payments | `/api/standing-orders` stores daily, weekly, and calendar-month schedules. The scheduled worker uses the atomic transfer ledger and a stable per-occurrence idempotency key; failed installments remain due for the next daily retry, and cancellation preserves the order record. |
 | Least privilege | 5 dedicated service accounts, bucket/secret-level bindings (`scripts/01-setup-gcp.sh`) |
 | No secrets in code | webhook URL in **Secret Manager**, injected via `--set-secrets`; Firestore has no connection string |
@@ -107,7 +107,7 @@ Set a budget alert: Billing → Budgets & alerts → $5.
 |---|---|
 | `01` errors "billing" / "permission" | Billing not attached, or APIs still enabling. Wait 1 min and re-run. |
 | Login works but pages show 401 | `frontend/.env` values wrong, or you didn't rebuild: re-run `04`. |
-| "Account not initialised" | The dashboard offers **Finish account setup** to safely retry the idempotent account initialization request. |
+| Account onboarding is pending | Complete the mandatory KYC-format fields in the dashboard; activation creates the ₹1,000 simulated opening balance. This is format validation, not government-backed identity verification. |
 | Transactions/statements fail with "index" error | Composite index still building (`gcloud firestore indexes composite list`) or click the link in the Cloud Run log. |
 | Statement stays PENDING/FAILED | `gcloud functions logs read statementFunction --gen2 --region asia-south1 --limit 30` |
 | Download says signBlob/permission denied | Re-run `01` (grants `serviceAccountTokenCreator` to bank-api-sa), then re-deploy `02`. |
@@ -119,4 +119,4 @@ Set a budget alert: Billing → Budgets & alerts → $5.
 
 ## Known limits (state these honestly in your viva)
 Publishing to Pub/Sub happens after the DB commit; in a crash between the two, an event could be lost (production fix: transactional outbox). Fraud signals are deterministic demo rules only and are not a validated fraud model.
-Account numbers are looked up by query; there is no KYC or real bank rails (out of scope per BRD). Firebase Auth email/password only (no MFA in MVP).
+KYC captures format-validated inputs and stores keyed hashes/masked values; it does not verify government records, documents, or AML/sanctions status. Phone lookup is indexed by HMAC, while legacy accounts can still fall back to account-number query. There are no real bank rails or MFA in this MVP.
