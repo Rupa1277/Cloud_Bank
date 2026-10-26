@@ -46,6 +46,13 @@ const toPaise = (v) => {
   if (!Number.isFinite(n) || n <= 0) throw ledger.err(400, 'Enter a valid amount');
   return Math.round(n * 100);
 };
+const nextSchedulerRunAt = () => {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCHours(3, 30, 0, 0); // 09:00 Asia/Kolkata, matching the Cloud Scheduler job.
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  return Timestamp.fromDate(next);
+};
 const idemKey = (req) => {
   const k = req.get('Idempotency-Key') || '';
   if (!/^[A-Za-z0-9_-]{8,100}$/.test(k)) throw ledger.err(400, 'Idempotency-Key header (8-100 chars) is required');
@@ -204,27 +211,47 @@ app.get('/api/statements/:id/download', auth, wrap(async (req, res) => {
 // ---- Recurring payments (executed by Cloud Scheduler -> Pub/Sub -> scheduled function) ----
 app.post('/api/standing-orders', auth, wrap(async (req, res) => {
   const toAccount = String(req.body.toAccount || '').trim().toUpperCase();
+  const frequency = String(req.body.frequency || '').toUpperCase();
   const intervalDays = Number(req.body.intervalDays);
-  if (![1, 7, 30].includes(intervalDays)) throw ledger.err(400, 'intervalDays must be 1, 7 or 30');
+  const supportedFrequencies = ['DAILY', 'WEEKLY', 'MONTHLY'];
+  const legacyInterval = !frequency && [1, 7, 30].includes(intervalDays);
+  if (!supportedFrequencies.includes(frequency) && !legacyInterval) {
+    throw ledger.err(400, 'frequency must be DAILY, WEEKLY or MONTHLY');
+  }
   const amount = toPaise(req.body.amount);
+  if (amount > ledger.MAX_AMOUNT) throw ledger.err(400, 'Amount exceeds the per-transaction limit of INR 1,00,000');
   const to = await ledger.findAccountByNumber(db, toAccount);
   if (!to || to.id === req.user.uid) throw ledger.err(400, 'Invalid recipient account');
+  const firstRunAt = nextSchedulerRunAt();
   const ref = await db.collection('standingOrders').add({
-    ownerUid: req.user.uid, toAccount, amount, intervalDays, active: true,
-    nextRunAt: Timestamp.now(), createdAt: FieldValue.serverTimestamp(),   // first run at the next scheduler tick
+    ownerUid: req.user.uid, toAccount, amount,
+    ...(legacyInterval ? { intervalDays } : { frequency, scheduleDayOfMonth: firstRunAt.toDate().getUTCDate() }),
+    active: true,
+    nextRunAt: firstRunAt, createdAt: FieldValue.serverTimestamp(),
   });
   res.status(201).json({ id: ref.id });
 }));
 app.get('/api/standing-orders', auth, wrap(async (req, res) => {
   const s = await db.collection('standingOrders').where('ownerUid', '==', req.user.uid).get();
   res.json(s.docs.map((d) => { const o = d.data();
-    return { id: d.id, toAccount: o.toAccount, amount: o.amount, intervalDays: o.intervalDays, nextRunAt: o.nextRunAt.toDate(), lastStatus: o.lastStatus || null }; }));
+    const frequency = o.frequency || ({ 1: 'DAILY', 7: 'WEEKLY', 30: 'LEGACY_30_DAYS' })[o.intervalDays] || 'UNKNOWN';
+    return {
+      id: d.id, toAccount: o.toAccount, amount: o.amount, frequency,
+      nextRunAt: o.nextRunAt.toDate(), active: o.active !== false,
+      lastStatus: o.lastStatus || null, lastError: o.lastError || null,
+      lastRunAt: o.lastRunAt ? o.lastRunAt.toDate() : null,
+      failedAttempts: o.failedAttempts || 0,
+      lastTxId: o.lastTxId || null,
+    };
+  }));
 }));
 app.delete('/api/standing-orders/:id', auth, wrap(async (req, res) => {
   const ref = db.doc(`standingOrders/${req.params.id}`);
   const s = await ref.get();
   if (!s.exists || s.data().ownerUid !== req.user.uid) throw ledger.err(404, 'Not found');
-  await ref.delete();
+  if (s.data().active !== false) {
+    await ref.update({ active: false, canceledAt: FieldValue.serverTimestamp() });
+  }
   res.json({ ok: true });
 }));
 

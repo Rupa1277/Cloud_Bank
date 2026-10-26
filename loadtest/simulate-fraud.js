@@ -15,6 +15,11 @@ if (!['https:', 'http:'].includes(parsedBaseUrl.protocol)) {
   console.error('CLOUDBANK_BASE_URL must use HTTPS (HTTP is allowed for local testing).');
   process.exit(1);
 }
+const simulationKey = process.env.DEMO_IDEMPOTENCY_KEY || `fraud-demo-${randomUUID()}`;
+if (!/^[A-Za-z0-9_-]{8,100}$/.test(simulationKey)) {
+  console.error('DEMO_IDEMPOTENCY_KEY must contain 8-100 letters, numbers, underscores, or hyphens.');
+  process.exit(1);
+}
 
 async function readJson(response) {
   const payload = await response.json().catch(() => ({}));
@@ -25,6 +30,7 @@ async function readJson(response) {
 }
 
 async function main() {
+  console.log(`Simulation idempotency key: ${simulationKey}`);
   const loginResponse = await fetch(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(process.env.FIREBASE_API_KEY)}`,
     {
@@ -41,7 +47,7 @@ async function main() {
   const headers = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${session.idToken}`,
-    'Idempotency-Key': `fraud-demo-${randomUUID()}`,
+    'Idempotency-Key': simulationKey,
   };
 
   const amount = process.env.DEMO_AMOUNT_INR;
@@ -59,6 +65,7 @@ async function main() {
   for (const [index, transfer] of result.transfers.entries()) {
     console.log(
       `${index + 1}. ${transfer.status}${transfer.duplicate ? ' (idempotent replay)' : ''} | ` +
+      `tx ${transfer.txId} | ₹${(transfer.amount / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })} | ` +
       `risk ${transfer.risk?.level || 'N/A'} ${transfer.risk?.score ?? 0}/100`,
     );
     for (const reason of transfer.risk?.reasons || []) console.log(`   - ${reason}`);

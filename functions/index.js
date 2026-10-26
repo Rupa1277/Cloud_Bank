@@ -8,6 +8,7 @@ const { PubSub } = require('@google-cloud/pubsub');
 const { Storage } = require('@google-cloud/storage');
 const PDFDocument = require('pdfkit');
 const ledger = require('./ledger');
+const { nextOccurrence } = require('./recurrence');
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -104,14 +105,30 @@ functions.cloudEvent('scheduledFunction', async (ce) => {
     const due = await db.collection('standingOrders').where('nextRunAt', '<=', Timestamp.now()).get();
     for (const doc of due.docs) {
       const o = doc.data(); if (!o.active) continue;
-      const key = `so_${doc.id}_${o.nextRunAt.toDate().toISOString().slice(0, 10)}`;   // one run per order per day, even if the job re-runs
-      let status = 'OK';
+      const scheduledAt = o.nextRunAt.toDate();
+      const key = `so_${doc.id}_${o.nextRunAt.toMillis()}`;
       try {
         const r = await ledger.transfer(db, { fromUid: o.ownerUid, toAccountNumber: o.toAccount, amount: o.amount,
           note: 'Standing order', idempotencyKey: key, source: 'SCHEDULER' });
         if (r.event) await pubsub.topic(TOPIC_TX).publishMessage({ json: r.event });
-      } catch (e) { status = `FAILED: ${e.message}`; }
-      await doc.ref.update({ nextRunAt: Timestamp.fromMillis(o.nextRunAt.toMillis() + o.intervalDays * 86400000), lastStatus: status, lastRunAt: Timestamp.now() });
+        await doc.ref.update({
+          nextRunAt: Timestamp.fromDate(nextOccurrence(scheduledAt, o)),
+          lastStatus: 'COMPLETED',
+          lastRunAt: Timestamp.now(),
+          lastTxId: r.txId,
+          lastError: FieldValue.delete(),
+          failedAttempts: 0,
+        });
+      } catch (e) {
+        // Keep the same due time and idempotency key so the next daily scheduler run retries this installment safely.
+        await doc.ref.update({
+          lastStatus: 'FAILED',
+          lastError: String(e.message).slice(0, 200),
+          lastAttemptAt: Timestamp.now(),
+          failedAttempts: (o.failedAttempts || 0) + 1,
+        });
+        console.error(`recurring payment failed for ${doc.id}; it remains due`, e);
+      }
     }
     console.log(`recurring payments processed: ${due.size}`);
   } else if (job === 'monthly-statements') {

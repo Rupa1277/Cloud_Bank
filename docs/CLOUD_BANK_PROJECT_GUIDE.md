@@ -90,6 +90,8 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 - The Security view shows flagged outgoing transfers returned in the user's transaction history.
 - Admin risk alerts are restricted to administrators and scan the latest 100 transactions for non-low risk records.
 - The BigQuery audit event includes `risk_score`, `risk_level`, and `risk_reasons`.
+- The Admin view has a **Run live fraud demo** action that calls the same optional endpoint as `loadtest/simulate-fraud.js`; both execute three serial, actual ledger transfers using simulated funds and show each completed result and risk score.
+- At the default INR 50,000 per transfer, a clean history should produce scores of 70 (high value + first-time recipient), 60 (high value), and 95 (high value + third rapid transfer). Existing recipient/history signals can affect these results.
 - Risk alerts are informational. They are not proof of fraud and should not be presented as a reliable fraud verdict.
 
 ### Suggested manual demonstration
@@ -99,7 +101,7 @@ The score is capped at 100. Levels are `LOW` (0–29), `MEDIUM` (30–59), and `
 3. Send INR 50,000 or more to produce a high-value signal, if account balance permits.
 4. Review the transfer response and the sender's Security view.
 5. Sign in as an administrator to review recent non-low signals in Admin.
-6. For a repeated-transfer demonstration, use the optional admin-only demo endpoint below to execute three outgoing transfers in sequence; the third transfer should match the two-minute velocity rule.
+6. For a repeated-transfer demonstration, use the Admin **Run live fraud demo** action or the optional admin-only endpoint below to execute three outgoing transfers in sequence; review the displayed transaction IDs and scores. At the default amount and with a clean history, the third transfer should match the two-minute velocity rule.
 
 Deposits, withdrawals, transfers, and welcome balances are simulated; clearly state this during demonstrations.
 
@@ -108,6 +110,8 @@ Deposits, withdrawals, transfers, and welcome balances are simulated; clearly st
 - All amounts are stored as integer paise (100 paise = INR 1).
 - The maximum amount per ledger operation is INR 1,00,000.
 - Transfers update sender and recipient balances, write a transaction, save an idempotency response/event, and update sender risk history inside one Firestore transaction.
+- Recurring orders store their scheduled occurrence as `nextRunAt`; daily and weekly orders advance by calendar days and monthly orders retain the intended day-of-month, clamped to the last day of shorter months.
+- A recurring transfer uses the standard ledger transaction and a stable idempotency key derived from the order ID and scheduled occurrence. A failed payment remains due and is retried on the next daily scheduler run; successful payments advance the schedule. Cancellation marks the order inactive rather than deleting its history.
 - Idempotency is operation-scoped and hashed. Retrying the same request should return the prior result and must not debit twice.
 - Pub/Sub publishing occurs after the Firestore transaction commits. The API logs publish errors and keeps the successful money operation response; a crash between commit and publish can lose an event. A production-grade transactional outbox is a known future improvement.
 - Pub/Sub delivery is at least once; function handlers should remain safe against duplicate delivery.
@@ -128,7 +132,10 @@ Deposits, withdrawals, transfers, and welcome balances are simulated; clearly st
 | `backend/src/ledger.js` | Deployment/test copy of the shared ledger. Deployment scripts copy `shared/ledger.js` here. |
 | `functions/ledger.js` | Deployment copy of the shared ledger used by scheduled transfers. |
 | `functions/index.js` | Pub/Sub workers for notifications, BigQuery audit, PDF statements, and scheduled jobs. |
+| `shared/recurrence.js` | Canonical recurring-payment date calculation shared by tests and the scheduled worker. |
+| `functions/recurrence.js` | Deployment copy of the recurring-payment date helper. `scripts/03-deploy-functions.sh` refreshes it from `shared/recurrence.js`. |
 | `backend/test/ledger.test.js` | Node built-in tests for ledger behavior, idempotency, and fraud-risk scoring. |
+| `backend/test/recurrence.test.js` | Node built-in tests for daily, weekly, monthly, and legacy recurrence calculations. |
 | `firestore/firestore.rules` | Firestore rules that deny direct client access. |
 | `firebase.json` | Firebase Hosting `/api/**` rewrite and Firestore rules configuration. |
 | `scripts/01-setup-gcp.sh` | Enables APIs, configures Firestore/indexes, Pub/Sub, Storage, BigQuery, IAM, and Secret Manager. |
@@ -140,7 +147,7 @@ Deposits, withdrawals, transfers, and welcome balances are simulated; clearly st
 | `docs/BRD_TRACEABILITY.md` | BRD requirement-to-code traceability. |
 | `README.md` | Setup, deployment, demo, troubleshooting, and cost guidance. |
 
-The ledger copies should remain identical. Change `shared/ledger.js` first, then run the deployment scripts or copy it to the backend/function source before validating those copies.
+The ledger copies should remain identical. Change `shared/ledger.js` first, then run the deployment scripts or copy it to the backend/function source before validating those copies. Likewise, change `shared/recurrence.js` first; `scripts/03-deploy-functions.sh` copies it into the Functions source directory before deployment.
 
 ## API overview
 
@@ -160,9 +167,9 @@ All application API routes except `/api/health` require a valid Firebase ID toke
 | POST | `/api/statements` | Request a PDF statement for a `YYYY-MM` month. |
 | GET | `/api/statements` | List the current user's recent statements. |
 | GET | `/api/statements/:id/download` | Get a signed download URL for a ready statement owned by the current user. |
-| POST | `/api/standing-orders` | Create a recurring transfer (interval 1, 7, or 30 days). |
-| GET | `/api/standing-orders` | List the current user's standing orders. |
-| DELETE | `/api/standing-orders/:id` | Cancel the current user's standing order. |
+| POST | `/api/standing-orders` | Create a recurring transfer with `frequency` `DAILY`, `WEEKLY`, or `MONTHLY`; legacy `intervalDays` values 1, 7, or 30 remain accepted. First payment is scheduled for the next 09:00 Asia/Kolkata run. |
+| GET | `/api/standing-orders` | List the current user's standing orders, next scheduled time, status, failure details, and last transaction ID. |
+| DELETE | `/api/standing-orders/:id` | Cancel the current user's standing order by marking it inactive; history is retained. |
 | GET | `/api/admin/stats` | Admin-only platform summary. |
 | GET | `/api/admin/fraud-alerts` | Admin-only non-low risk signals in the latest 100 transactions. |
 | GET | `/api/admin/users` | Admin-only paginated user list. |
@@ -182,7 +189,7 @@ All application API routes except `/api/health` require a valid Firebase ID toke
 | Cloud Functions gen2 | `notifyFunction`, `auditFunction`, `statementFunction`, and `scheduledFunction`; independently scalable. |
 | Cloud Storage | Private generated PDF statements. |
 | BigQuery | `cloudbank_audit.transactions_audit`, including transfer risk fields. |
-| Cloud Scheduler | Daily recurring-payment job and monthly statement job. |
+| Cloud Scheduler | Daily 09:00 Asia/Kolkata recurring-payment retry/processing job and monthly statement job. |
 | Secret Manager | Optional notification webhook secret; no secret values belong in source control. |
 | Looker Studio | Optional dashboard connected to BigQuery audit data. |
 
@@ -238,7 +245,7 @@ Never run teardown or destructive data/resource operations without explicit huma
 
 The endpoint is disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true` is explicitly set on Cloud Run. It also requires a valid Firebase ID token with the admin role. Keep the deployment default disabled; only enable it temporarily for an approved demo, then set it back to `false`.
 
-The endpoint accepts `{ "recipientAccount": "CB...", "amount": 50000 }` where `amount` is INR and defaults to ₹50,000. It generates three serial transfers to the same recipient with an idempotency key derived from the caller's `Idempotency-Key`. Each transfer uses the normal ledger transaction, records the risk object, and publishes its transaction event. A high-value demo requires enough simulated sender funds for all three transfers (₹1,50,000 at the default amount). The simulation is not a single all-or-nothing batch: each individual transfer is atomic. Do not invoke it against accounts/data unless the demo operator expects these simulated ledger entries.
+The endpoint accepts `{ "recipientAccount": "CB...", "amount": 50000 }` where `amount` is INR and defaults to ₹50,000. It generates three serial transfers to the same recipient with an idempotency key derived from the caller's `Idempotency-Key`. Each transfer uses the normal ledger transaction, records the risk object, and publishes its transaction event. At the default amount and with a clean recent history, expected scores are 70, 60, and 95. A high-value demo requires enough simulated sender funds for all three transfers (₹1,50,000 at the default amount). The simulation is not a single all-or-nothing batch: each individual transfer is atomic. Do not invoke it against accounts/data unless the demo operator expects these simulated ledger entries.
 
 The Node 20 helper `loadtest/simulate-fraud.js` signs in through Firebase Authentication and calls the endpoint. Set these environment variables locally; do not commit them:
 
@@ -247,8 +254,13 @@ The Node 20 helper `loadtest/simulate-fraud.js` signs in through Firebase Authen
 - `DEMO_EMAIL` and `DEMO_PASSWORD` — an administrator's test login.
 - `DEMO_RECIPIENT_ACCOUNT` — another test account's account number.
 - Optional `DEMO_AMOUNT_INR` — transfer amount in INR; the sender needs three times this amount.
+- Optional `DEMO_IDEMPOTENCY_KEY` — 8-100 character key. The helper prints its generated key; rerun with that same key after an interrupted request to replay the same three ledger operations rather than start a new demo.
 
-Run it with `node loadtest/simulate-fraud.js`. The script does not print the ID token or password. A retry using a new helper invocation creates a new idempotency key and performs another three transfers; only retry the same HTTP request with the same key if you intend to replay the original simulation.
+Run it with `node loadtest/simulate-fraud.js`. The script does not print the ID token or password. Each new invocation generates a new idempotency key and therefore starts a new three-transfer scenario unless `DEMO_IDEMPOTENCY_KEY` is set to the previously printed key.
+
+### Recurring-payment behavior
+
+The Recurring screen supports daily, weekly, and monthly orders. The first occurrence is set to the next daily Cloud Scheduler run (09:00 Asia/Kolkata); later occurrences preserve that scheduled time. Monthly schedules preserve their day-of-month, using the last day of a shorter month when needed. The scheduled worker calls the same atomic ledger transfer used by ordinary payments, publishes the completed transaction event, and stores the last transaction ID/status on the order. Failed installments remain due with an error and attempt count, and are retried at the next daily run using the same occurrence key; this avoids a second debit if a prior run completed the ledger transfer but failed before updating the order. Canceling an order marks it inactive and retains its record. Legacy orders with `intervalDays` continue to run.
 
 ## Security, privacy, and cost guardrails
 

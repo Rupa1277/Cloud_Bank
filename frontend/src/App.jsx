@@ -137,21 +137,32 @@ function Statements({ list, reload }) {
 }
 
 function Standing({ list, reload }) {
-  const [f, setF] = useState({ toAccount: '', amount: '', intervalDays: 30 }), [msg, setMsg] = useState('')
-  const add = async (e) => { e.preventDefault(); try { await api('/standing-orders', { method: 'POST', body: { ...f, intervalDays: Number(f.intervalDays) } }); setMsg('Created - runs at the next scheduler tick (daily 09:00 IST).'); reload() } catch (x) { setMsg(x.message) } }
-  const del = async (id) => { await api(`/standing-orders/${id}`, { method: 'DELETE' }); reload() }
+  const [f, setF] = useState({ toAccount: '', amount: '', frequency: 'MONTHLY' }), [msg, setMsg] = useState('')
+  const add = async (e) => { e.preventDefault(); try { await api('/standing-orders', { method: 'POST', body: f }); setMsg('Created - first payment runs at the next daily scheduler tick (09:00 IST).'); reload() } catch (x) { setMsg(x.message) } }
+  const del = async (id) => { try { await api(`/standing-orders/${id}`, { method: 'DELETE' }); setMsg('Recurring payment canceled.'); reload() } catch (x) { setMsg(x.message) } }
   return (<div className="card"><h3>Recurring payments</h3><form onSubmit={add} className="row">
     <input required placeholder="Recipient account" value={f.toAccount} onChange={(e) => setF({ ...f, toAccount: e.target.value })} />
     <input required type="number" min="1" step="0.01" placeholder="Amount (₹)" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
-    <select value={f.intervalDays} onChange={(e) => setF({ ...f, intervalDays: e.target.value })}><option value="1">Daily</option><option value="7">Weekly</option><option value="30">Monthly</option></select>
+    <select value={f.frequency} onChange={(e) => setF({ ...f, frequency: e.target.value })}><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></select>
     <button className="btn">Add</button></form>{msg && <p className="muted">{msg}</p>}
-    <table><tbody>{list.map((o) => (<tr key={o.id}><td>{o.toAccount}</td><td>{inr(o.amount)}</td><td>every {o.intervalDays}d</td><td className="muted">{o.lastStatus || 'pending'}</td>
-      <td><button className="btn red" onClick={() => del(o.id)}>Cancel</button></td></tr>))}</tbody></table></div>)
+    <table><thead><tr><th>Recipient</th><th>Amount</th><th>Frequency</th><th>Next payment</th><th>Status</th><th>Last transaction</th><th></th></tr></thead><tbody>
+      {list.map((o) => (<tr key={o.id}><td>{o.toAccount}</td><td>{inr(o.amount)}</td><td>{o.frequency === 'LEGACY_30_DAYS' ? 'Every 30 days' : o.frequency.toLowerCase()}</td>
+        <td>{when(o.nextRunAt)}</td><td className={o.lastStatus === 'FAILED' ? 'bad' : 'muted'}>{o.active ? `${o.lastStatus || 'Scheduled'}${o.failedAttempts ? ` · ${o.failedAttempts} failed attempt(s)` : ''}` : 'Canceled'}
+          {o.lastError && <small>{o.lastError}</small>}</td>
+        <td>{o.lastTxId || '—'}</td>
+        <td>{o.active && <button className="btn red" onClick={() => del(o.id)}>Cancel</button>}</td></tr>))}
+      {!list.length && <tr><td colSpan="7" className="muted">No recurring payments scheduled.</td></tr>}
+    </tbody></table>
+    <p className="muted">Payments debit your available balance through the normal atomic transfer ledger. Failed payments stay due and retry on the next daily run; canceled orders remain visible.</p>
+  </div>)
 }
 
 function Admin() {
   const [stats, setStats] = useState(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [fraudAlerts, setFraudAlerts] = useState([]), [fraudLoading, setFraudLoading] = useState(true), [fraudError, setFraudError] = useState('')
+  const [demoRecipient, setDemoRecipient] = useState(''), [demoBusy, setDemoBusy] = useState(false)
+  const [demoError, setDemoError] = useState(''), [demoTransfers, setDemoTransfers] = useState([])
+  const [demoKey, setDemoKey] = useState(() => `fraud-demo-${newKey()}`)
   const [users, setUsers] = useState([]), [usersLoading, setUsersLoading] = useState(true), [usersError, setUsersError] = useState('')
   const [nextPageToken, setNextPageToken] = useState(null), [busyUid, setBusyUid] = useState('')
   const refresh = useCallback(async () => {
@@ -176,6 +187,20 @@ function Admin() {
     catch (err) { setFraudError(err.message) }
     finally { setFraudLoading(false) }
   }, [])
+  const runFraudDemo = async (e) => {
+    e.preventDefault(); setDemoBusy(true); setDemoError(''); setDemoTransfers([])
+    try {
+      const result = await api('/demo/simulate-fraud', {
+        method: 'POST',
+        body: { recipientAccount: demoRecipient, amount: 50000 },
+        idem: demoKey,
+      })
+      setDemoTransfers(result.transfers)
+      setDemoKey(`fraud-demo-${newKey()}`)
+      await Promise.all([loadFraudAlerts(), refresh()])
+    } catch (err) { setDemoError(err.message) }
+    finally { setDemoBusy(false) }
+  }
   useEffect(() => { refresh(); loadUsers(); loadFraudAlerts() }, [refresh, loadUsers, loadFraudAlerts])
   const setUserRole = async (user) => {
     const role = user.role === 'admin' ? 'customer' : 'admin'
@@ -191,6 +216,25 @@ function Admin() {
   const dashboardUrl = import.meta.env.VITE_LOOKER_STUDIO_URL?.trim()
   const safeDashboardUrl = dashboardUrl?.startsWith('https://') ? dashboardUrl : ''
   return (<>
+    <section className="card">
+      <div className="admin-title"><div><span className="eyebrow">LIVE LEDGER DEMO</span><h3>Run a fraud-detection scenario</h3>
+        <p className="muted">This makes three real ₹50,000 transfers from your simulated account to the recipient below. Transfers complete normally; risk rules score and report them afterward.</p></div></div>
+      <form onSubmit={runFraudDemo} className="row">
+        <input required placeholder="Recipient account (CB...)" value={demoRecipient} onChange={(e) => setDemoRecipient(e.target.value)} />
+        <button className="btn" disabled={demoBusy}>{demoBusy ? 'Running three transfers…' : 'Run live fraud demo'}</button>
+      </form>
+      <p className="muted">Requires at least ₹1,50,000 simulated balance and the optional demo endpoint enabled by the operator. Each completed transfer is written to the ledger and published for audit processing.</p>
+      {demoError && <div className="bad" role="alert">{demoError}</div>}
+      {demoTransfers.length > 0 && <div className="risk-list" aria-live="polite">
+        {demoTransfers.map((transfer, index) => <article className="risk-item" key={transfer.txId}>
+          <div className="risk-item-heading"><div><span className={`risk-badge ${transfer.risk?.level?.toLowerCase() || 'low'}`}>{transfer.risk?.level || 'LOW'} RISK</span>
+            <h4>Transfer {index + 1} · {transfer.status}</h4></div><strong>{inr(transfer.amount)}</strong></div>
+          <p>Risk score {transfer.risk?.score ?? 0}/100</p>
+          {transfer.risk?.reasons?.length > 0 && <ul>{transfer.risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+          {!transfer.risk?.reasons?.length && <p className="muted">No risk rule triggered for this transfer.</p>}
+        </article>)}
+      </div>}
+    </section>
     <section className="card">
       <div className="admin-title"><div><span className="eyebrow">RISK MONITORING</span><h3>Recent fraud signals</h3>
         <p className="muted">Rule-based alerts for completed transfers. Signals never block a payment.</p></div>

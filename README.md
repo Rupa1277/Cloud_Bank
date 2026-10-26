@@ -49,7 +49,7 @@ Your app is at **https://<project-id>.web.app**.
 4. **Idempotency (FR-04)**: in the browser DevTools → Network, right-click the `transfer` request → *Copy as cURL*, run it twice in Cloud Shell.
    Second response has `"duplicate": true` and the balance is charged once.
 5. **Statements (FR-08)**: *Statements → Generate* → status goes PENDING → READY → **Download** opens the PDF via a 10-minute signed URL.
-6. **Recurring (FR-07)**: *Recurring → Add* (A → B, ₹100, daily), then run the job on demand:
+6. **Recurring (FR-07)**: *Recurring → Add* (A → B, ₹100, choose daily, weekly, or monthly). The first payment is due at the next 09:00 IST scheduler run. Each due payment uses the normal atomic transfer ledger and an idempotency key tied to that scheduled occurrence. Monthly payments follow the selected day of month (clamped to the last day in shorter months); if a payment fails, its due date is retained and it is retried at the next daily run. Canceling preserves the order record and stops future runs. To trigger the job on demand:
    `gcloud scheduler jobs run recurring-payments-daily --location asia-south1`
 7. **Audit (FR-09)**: `bq query --use_legacy_sql=false 'SELECT type, COUNT(*) n, SUM(amount_paise)/100 inr FROM cloudbank_audit.transactions_audit GROUP BY type'`
 8. **Admin roles and audit (FR-02/09)**: bootstrap the first administrator, then sign out/in:
@@ -57,9 +57,9 @@ Your app is at **https://<project-id>.web.app**.
    An *Admin* tab appears with platform metrics, recent risk signals, paginated user/role management, and a Looker Studio link once configured. Administrators can grant or remove administrator roles; users must sign out and back in before updated claims take effect. A normal user calling `/api/admin/stats` or `/api/admin/users` gets **403**.
 9. **Fraud-detection showcase**: the optional demo endpoint is disabled by default and only available to an administrator. Before enabling it, confirm the admin account has at least ₹1,50,000 simulated balance and set up a different recipient account. Temporarily enable the endpoint:
    `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=true`
-   Then run the helper from the repository root, setting the environment variables in PowerShell (`CLOUDBANK_BASE_URL`, `FIREBASE_API_KEY`, `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_RECIPIENT_ACCOUNT`):
+   Then either use the **Run live fraud demo** control in the Admin tab or run the helper from the repository root, setting the environment variables in PowerShell (`CLOUDBANK_BASE_URL`, `FIREBASE_API_KEY`, `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_RECIPIENT_ACCOUNT`):
    `node loadtest/simulate-fraud.js`
-   It signs in as the admin and executes three serial ₹50,000 simulated transfers using the atomic ledger path. The third transfer should show the velocity signal (+35); the high-value rule also applies. Review **Security** and **Admin** for the alerts, then disable the endpoint:
+   Either option executes three actual ledger transfers of simulated funds (₹50,000 each), displays their transaction IDs and risk scores, and refreshes the Admin risk alerts. The third transfer should show the velocity signal (+35); the high-value rule also applies. If the helper's response is interrupted, rerun it with the printed `DEMO_IDEMPOTENCY_KEY` to resume the same scenario without duplicate charges. Review **Security**, **Admin**, and the BigQuery audit table, then disable the endpoint:
    `gcloud run services update bank-api --region asia-south1 --update-env-vars DEMO_FRAUD_SIMULATION_ENABLED=false`
    Alternatively set the recipient and `DEMO_AMOUNT_INR` (maximum ₹1,00,000 per transfer; sender needs 3× that amount). This is an explainable, rule-based demonstration: transfers are not blocked and the score is not a production/ML fraud verdict.
 
@@ -87,7 +87,8 @@ it rises from 0/1 to several (max 10) and falls back to **0** a few minutes afte
 | No duplicate charges (FR-04) | `Idempotency-Key` header → `idempotency/{uid_key}` doc checked inside the same transaction |
 | Immediate response + async fan-out (FR-05/06) | publish after commit, 3 independent subscribers |
 | Private statements (FR-08) | bucket with public-access-prevention + uniform access; V4 signed URLs (10 min) |
-| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency (third transfer within two minutes), amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. Optional `/api/demo/simulate-fraud` is admin-only and disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true`. Informational only; no automatic blocking or ML. |
+| Fraud-detection showcase | `shared/ledger.js` scores completed transfers using amount, recent transfer frequency (third transfer within two minutes), amount deviation, and recipient history; risk score/reasons flow to the user Security page, admin alerts, and BigQuery audit rows. The Admin live demo and `loadtest/simulate-fraud.js` both call the admin-only `/api/demo/simulate-fraud` endpoint, disabled unless `DEMO_FRAUD_SIMULATION_ENABLED=true`; they execute real ledger transfers using simulated money. Informational only; no automatic blocking or ML. |
+| Recurring payments | `/api/standing-orders` stores daily, weekly, and calendar-month schedules. The scheduled worker uses the atomic transfer ledger and a stable per-occurrence idempotency key; failed installments remain due for the next daily retry, and cancellation preserves the order record. |
 | Least privilege | 5 dedicated service accounts, bucket/secret-level bindings (`scripts/01-setup-gcp.sh`) |
 | No secrets in code | webhook URL in **Secret Manager**, injected via `--set-secrets`; Firestore has no connection string |
 | Defense in depth | `firestore.rules` = deny-all for clients; helmet + HSTS headers; input validation; amount limits |

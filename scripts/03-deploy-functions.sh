@@ -2,6 +2,7 @@
 # Deploys 4 Pub/Sub-triggered Cloud Functions (gen2) + 2 Cloud Scheduler jobs.
 set -euo pipefail; source "$(dirname "$0")/config.sh"
 cp "$ROOT/shared/ledger.js" "$ROOT/functions/ledger.js"
+cp "$ROOT/shared/recurrence.js" "$ROOT/functions/recurrence.js"
 ENVV="STATEMENT_BUCKET=$BUCKET,BQ_DATASET=$DATASET,TOPIC_TX=transaction-completed,TOPIC_STMT=statement-requests"
 deploy() { # name topic service-account [extra flags]
   local name=$1 topic=$2 acct=$3; shift 3
