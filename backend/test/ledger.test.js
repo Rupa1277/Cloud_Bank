@@ -186,6 +186,7 @@ test('new account remains pending without KYC and opens once with a 1,000 INR ba
     pan: 'ABCDE1234F',
     addressProofType: 'AADHAAR',
     addressProofNumber: '123412341234',
+    photoUrl: 'this field is no longer used',
   };
   const active = await ledger.initializeAccount(db, {
     uid: 'new-user', email: 'new@example.com', profile, kycSecret: 'x'.repeat(64),
@@ -201,6 +202,7 @@ test('new account remains pending without KYC and opens once with a 1,000 INR ba
   assert.equal(stored.phone, undefined);
   assert.equal(stored.pan, undefined);
   assert.equal(stored.addressProofNumber, undefined);
+  assert.equal(stored.passportPhotoUrl, undefined);
   assert.equal(stored.phoneMasked, '******3210');
   assert.equal(stored.panMasked, 'AB******4F');
   assert.ok(db.docs.has(`phone_to_account/${stored.phoneLookupHash}`));

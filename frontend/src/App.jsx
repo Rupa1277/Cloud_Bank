@@ -8,7 +8,7 @@ const newKey = () => crypto.randomUUID()
 function Login() {
   const [mode, setMode] = useState('login'), [f, setF] = useState({
     name: '', phone: '', pan: '', addressProofType: 'AADHAAR', addressProofNumber: '',
-    photoUrl: '', email: '', password: '',
+    email: '', password: '',
   }), [msg, setMsg] = useState('')
   const submit = async (e) => {
     e.preventDefault(); setMsg('')
@@ -18,7 +18,6 @@ function Login() {
         await api('/account/init', { method: 'POST', body: {
           fullName: f.name, phone: f.phone, pan: f.pan,
           addressProofType: f.addressProofType, addressProofNumber: f.addressProofNumber,
-          photoUrl: f.photoUrl,
         } })
         await auth.currentUser.getIdToken(true)
       } else await signInWithEmailAndPassword(auth, f.email, f.password)
@@ -56,7 +55,6 @@ function Login() {
               <option value="AADHAAR">Aadhaar</option><option value="VOTER_ID">Voter ID</option><option value="PASSPORT">Passport</option>
             </select></label>
             <label>Address proof number<input required autoComplete="off" maxLength="12" placeholder={f.addressProofType === 'AADHAAR' ? '12-digit number' : f.addressProofType === 'PASSPORT' ? 'A1234567' : 'ABC1234567'} value={f.addressProofNumber} onChange={(e) => setF({ ...f, addressProofNumber: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} /></label>
-            <label>Passport-size photo URL <span className="muted">(optional)</span><input type="url" placeholder="Private Cloud Storage URL" value={f.photoUrl} onChange={(e) => setF({ ...f, photoUrl: e.target.value })} /></label>
           </>}
           <label>Email address<input required type="email" autoComplete="email" placeholder="you@example.com" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
           <label>Password<input required type="password" minLength={6} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="At least 6 characters" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} /></label>
@@ -73,7 +71,7 @@ function Login() {
 }
 
 function KycForm({ onDone }) {
-  const [f, setF] = useState({ fullName: '', phone: '', pan: '', addressProofType: 'AADHAAR', addressProofNumber: '', photoUrl: '' })
+  const [f, setF] = useState({ fullName: '', phone: '', pan: '', addressProofType: 'AADHAAR', addressProofNumber: '' })
   const [msg, setMsg] = useState(''), [busy, setBusy] = useState(false)
   const submit = async (e) => {
     e.preventDefault(); setBusy(true); setMsg('')
@@ -98,7 +96,6 @@ function KycForm({ onDone }) {
       <option value="AADHAAR">Aadhaar</option><option value="VOTER_ID">Voter ID</option><option value="PASSPORT">Passport</option>
     </select></label>
     <label>Address proof number<input required maxLength="12" autoComplete="off" value={f.addressProofNumber} onChange={(e) => setF({ ...f, addressProofNumber: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} /></label>
-    <label>Passport-size photo URL <span className="muted">(optional)</span><input type="url" placeholder="Private Cloud Storage URL" value={f.photoUrl} onChange={(e) => setF({ ...f, photoUrl: e.target.value })} /></label>
     <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Submit verification details'}</button>
     {msg && <p className={msg.includes('accepted') ? 'ok' : 'bad'} role="status">{msg}</p>}
   </form>)

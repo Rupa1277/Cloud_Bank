@@ -35,7 +35,6 @@ function validateKyc(profile = {}) {
     pan: String(profile.pan ?? '').trim().toUpperCase(),
     addressProofType: String(profile.addressProofType ?? '').trim().toUpperCase(),
     addressProofNumber: String(profile.addressProofNumber ?? '').trim().toUpperCase(),
-    photoUrl: String(profile.photoUrl ?? '').trim(),
   };
   const errors = [];
   if (values.fullName.length < 2 || values.fullName.length > 80 || /[\u0000-\u001f]/.test(values.fullName)) errors.push('fullName');
@@ -45,17 +44,6 @@ function validateKyc(profile = {}) {
   if (values.addressProofType === 'AADHAAR' && !/^\d{12}$/.test(values.addressProofNumber)) errors.push('addressProofNumber');
   if (values.addressProofType === 'VOTER_ID' && !/^[A-Z]{3}\d{7}$/.test(values.addressProofNumber)) errors.push('addressProofNumber');
   if (values.addressProofType === 'PASSPORT' && !/^[A-PR-WY][0-9]{7}$/.test(values.addressProofNumber)) errors.push('addressProofNumber');
-  if (values.photoUrl) {
-    try {
-      const url = new URL(values.photoUrl);
-      if (url.protocol !== 'https:' || url.search || url.hash ||
-          !['storage.googleapis.com', 'firebasestorage.googleapis.com'].includes(url.hostname)) {
-        errors.push('photoUrl');
-      }
-    } catch {
-      errors.push('photoUrl');
-    }
-  }
   return { valid: errors.length === 0, errors, values };
 }
 
@@ -89,7 +77,6 @@ async function initializeAccount(db, { uid, email, profile = {}, kycSecret }) {
     addressProofType: values.addressProofType,
     addressProofHash: hashKycValue(kycSecret, `address-proof:${values.addressProofType}`, values.addressProofNumber),
     addressProofMasked: maskProofNumber(values.addressProofNumber),
-    passportPhotoUrl: values.photoUrl || null,
   } : null;
   const accountRef = db.doc(`accounts/${uid}`);
 
@@ -156,6 +143,7 @@ async function initializeAccount(db, { uid, email, profile = {}, kycSecret }) {
         createdAt: old.createdAt || FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       };
+      delete account.passportPhotoUrl;
 
       transaction.set(accountRef, account);
       transaction.set(chosenNumberRef, { uid });
