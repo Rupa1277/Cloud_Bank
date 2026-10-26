@@ -6,13 +6,20 @@ import { api, inr, when } from './api'
 const newKey = () => crypto.randomUUID()
 
 function Login() {
-  const [mode, setMode] = useState('login'), [f, setF] = useState({ name: '', email: '', password: '' }), [msg, setMsg] = useState('')
+  const [mode, setMode] = useState('login'), [f, setF] = useState({
+    name: '', phone: '', pan: '', addressProofType: 'AADHAAR', addressProofNumber: '',
+    photoUrl: '', email: '', password: '',
+  }), [msg, setMsg] = useState('')
   const submit = async (e) => {
     e.preventDefault(); setMsg('')
     try {
       if (mode === 'signup') {
         await createUserWithEmailAndPassword(auth, f.email, f.password)
-        await api('/account/init', { method: 'POST', body: { name: f.name } })
+        await api('/account/init', { method: 'POST', body: {
+          fullName: f.name, phone: f.phone, pan: f.pan,
+          addressProofType: f.addressProofType, addressProofNumber: f.addressProofNumber,
+          photoUrl: f.photoUrl,
+        } })
         await auth.currentUser.getIdToken(true)
       } else await signInWithEmailAndPassword(auth, f.email, f.password)
     } catch (err) { setMsg(err.message.replace('Firebase: ', '')) }
@@ -41,7 +48,16 @@ function Login() {
           <button type="button" className={mode === 'signup' ? 'on' : ''} onClick={() => setMode('signup')}>Create account</button>
         </div>
         <form onSubmit={submit}>
-          {mode === 'signup' && <label>Full name<input required autoComplete="name" placeholder="Your name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>}
+          {mode === 'signup' && <>
+            <label>Full name<input required autoComplete="name" minLength="2" maxLength="80" placeholder="Your full legal name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
+            <label>Mobile phone<input required type="tel" inputMode="numeric" autoComplete="tel-national" pattern="[6-9][0-9]{9}" maxLength="10" placeholder="10-digit mobile number" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
+            <label>PAN card number<input required autoComplete="off" pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]" maxLength="10" placeholder="ABCDE1234F" value={f.pan} onChange={(e) => setF({ ...f, pan: e.target.value.toUpperCase() })} /></label>
+            <label>Address proof type<select required value={f.addressProofType} onChange={(e) => setF({ ...f, addressProofType: e.target.value, addressProofNumber: '' })}>
+              <option value="AADHAAR">Aadhaar</option><option value="VOTER_ID">Voter ID</option><option value="PASSPORT">Passport</option>
+            </select></label>
+            <label>Address proof number<input required autoComplete="off" maxLength="12" placeholder={f.addressProofType === 'AADHAAR' ? '12-digit number' : f.addressProofType === 'PASSPORT' ? 'A1234567' : 'ABC1234567'} value={f.addressProofNumber} onChange={(e) => setF({ ...f, addressProofNumber: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} /></label>
+            <label>Passport-size photo URL <span className="muted">(optional)</span><input type="url" placeholder="Private Cloud Storage URL" value={f.photoUrl} onChange={(e) => setF({ ...f, photoUrl: e.target.value })} /></label>
+          </>}
           <label>Email address<input required type="email" autoComplete="email" placeholder="you@example.com" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
           <label>Password<input required type="password" minLength={6} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="At least 6 characters" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} /></label>
           <button className="btn auth-submit">{mode === 'signup' ? 'Create account' : 'Sign in'} <span aria-hidden="true">→</span></button>
@@ -56,37 +72,123 @@ function Login() {
   </div>)
 }
 
-function Money({ title, path, onDone }) {                // deposit / withdraw
-  const [amount, setAmount] = useState(''), [key, setKey] = useState(newKey), [msg, setMsg] = useState(null)
-  const go = async (e) => { e.preventDefault(); setMsg(null)
-    try { await api(path, { method: 'POST', body: { amount }, idem: key }); setMsg({ ok: 'Done' }); setAmount(''); setKey(newKey()); onDone() }
-    catch (err) { setMsg({ bad: err.message }) } }
-  return (<form className="card" onSubmit={go}><h3>{title}</h3>
-    <input required type="number" min="1" step="0.01" placeholder="Amount (₹)" value={amount} onChange={(e) => setAmount(e.target.value)} />
-    <button className="btn alt">{title}</button>{msg && <div className={msg.ok ? 'ok' : 'bad'} style={{ marginTop: 8 }}>{msg.ok || msg.bad}</div>}</form>)
+function KycForm({ onDone }) {
+  const [f, setF] = useState({ fullName: '', phone: '', pan: '', addressProofType: 'AADHAAR', addressProofNumber: '', photoUrl: '' })
+  const [msg, setMsg] = useState(''), [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setMsg('')
+    try {
+      const account = await api('/account/init', { method: 'POST', body: f })
+      if (account.accountStatus !== 'ACTIVE') {
+        setMsg(`Please check these fields: ${(account.kycErrors || []).join(', ')}`)
+      } else {
+        setMsg('Verification details accepted. Your account is active.')
+        onDone()
+      }
+    } catch (error) { setMsg(error.message) }
+    finally { setBusy(false) }
+  }
+  return (<form className="card" onSubmit={submit}>
+    <h3>Complete account verification</h3>
+    <p className="muted">Your identifiers are stored as keyed verification hashes and masked values. This demo does not verify documents against government records.</p>
+    <label>Full name<input required minLength="2" maxLength="80" autoComplete="name" value={f.fullName} onChange={(e) => setF({ ...f, fullName: e.target.value })} /></label>
+    <label>Mobile phone<input required type="tel" inputMode="numeric" pattern="[6-9][0-9]{9}" maxLength="10" autoComplete="tel-national" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
+    <label>PAN card number<input required pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]" maxLength="10" autoComplete="off" value={f.pan} onChange={(e) => setF({ ...f, pan: e.target.value.toUpperCase() })} /></label>
+    <label>Address proof type<select required value={f.addressProofType} onChange={(e) => setF({ ...f, addressProofType: e.target.value, addressProofNumber: '' })}>
+      <option value="AADHAAR">Aadhaar</option><option value="VOTER_ID">Voter ID</option><option value="PASSPORT">Passport</option>
+    </select></label>
+    <label>Address proof number<input required maxLength="12" autoComplete="off" value={f.addressProofNumber} onChange={(e) => setF({ ...f, addressProofNumber: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} /></label>
+    <label>Passport-size photo URL <span className="muted">(optional)</span><input type="url" placeholder="Private Cloud Storage URL" value={f.photoUrl} onChange={(e) => setF({ ...f, photoUrl: e.target.value })} /></label>
+    <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Submit verification details'}</button>
+    {msg && <p className={msg.includes('accepted') ? 'ok' : 'bad'} role="status">{msg}</p>}
+  </form>)
 }
 
 function Transfer({ onDone }) {
-  const [f, setF] = useState({ toAccount: '', amount: '', note: '' }), [key, setKey] = useState(newKey), [msg, setMsg] = useState(null), [busy, setBusy] = useState(false)
+  const [recipientType, setRecipientType] = useState('account')
+  const [f, setF] = useState({ recipientAccount: '', recipientPhone: '', amount: '', note: '' })
+  const [recipient, setRecipient] = useState(null), [riskPrompt, setRiskPrompt] = useState(null)
+  const [key, setKey] = useState(newKey), [msg, setMsg] = useState(null), [busy, setBusy] = useState(false)
+  const recipientPayload = () => recipientType === 'account'
+    ? { recipientAccount: f.recipientAccount }
+    : { recipientPhone: f.recipientPhone }
+  const verifyRecipient = async () => {
+    const result = await api('/transfer/verify-recipient', { method: 'POST', body: recipientPayload() })
+    setRecipient(result.isValid ? result : null)
+    if (!result.isValid) throw new Error('We could not verify an active recipient with those details')
+    return result
+  }
+  const submitTransfer = async (riskDecision, riskConfirmationId) => {
+    const result = await api('/transfer', {
+      method: 'POST',
+      body: {
+        ...recipientPayload(),
+        amount: f.amount,
+        note: f.note,
+        ...(riskDecision ? { riskDecision, riskConfirmationId } : {}),
+      },
+      idem: key,
+    })
+    if (result.confirmationRequired) {
+      setRiskPrompt({ confirmationId: result.confirmationId, risk: result.risk })
+      setMsg({ warning: true })
+      return
+    }
+    setRiskPrompt(null)
+    if (result.status === 'BLOCKED') {
+      setMsg({ blocked: true, risk: result.risk })
+      setKey(newKey())
+      return
+    }
+    setMsg({ ok: `Transfer complete${result.duplicate ? ' (duplicate request ignored)' : ''}. New balance ${inr(result.newBalance)}`, risk: result.risk })
+    setF({ recipientAccount: '', recipientPhone: '', amount: '', note: '' })
+    setRecipient(null)
+    setKey(newKey())
+    onDone()
+  }
   const go = async (e) => { e.preventDefault(); setMsg(null); setBusy(true)
     try {                                                 // the SAME key is reused if the request is retried -> no double charge
-      const r = await api('/transfer', { method: 'POST', body: f, idem: key })
-      setMsg({ ok: `Transfer complete${r.duplicate ? ' (duplicate request ignored)' : ''}. New balance ${inr(r.newBalance)}`, risk: r.risk })
-      setF({ toAccount: '', amount: '', note: '' }); setKey(newKey()); onDone()
+      await verifyRecipient()
+      await submitTransfer()
     } catch (err) { setMsg({ bad: err.message + ' - you can safely press Send again.' }) }
     setBusy(false) }
+  const decideRisk = async (riskDecision) => {
+    if (!riskPrompt) return
+    setBusy(true); setMsg(null)
+    try {
+      await submitTransfer(riskDecision, riskPrompt.confirmationId)
+    } catch (error) {
+      setRiskPrompt(null)
+      setMsg({ bad: `${error.message} Please review and submit the transfer again.` })
+      setKey(newKey())
+    } finally { setBusy(false) }
+  }
   return (<form className="card" onSubmit={go}><h3>Send money</h3>
-    <input required placeholder="Recipient account number (CB...)" value={f.toAccount} onChange={(e) => setF({ ...f, toAccount: e.target.value })} />
-    <div className="row"><input required type="number" min="1" step="0.01" placeholder="Amount (₹)" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
-      <input placeholder="Note (optional)" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></div>
-    <button className="btn" disabled={busy}>{busy ? 'Sending…' : 'Send'}</button>
-    {msg && <div className={msg.ok ? 'ok' : 'bad'} style={{ marginTop: 8 }}>{msg.ok || msg.bad}
-      {msg.risk && msg.risk.level !== 'LOW' && <div className={`risk-result ${msg.risk.level.toLowerCase()}`}>
-        <strong>{msg.risk.level} risk signal · score {msg.risk.score}/100</strong>
-        <span>{msg.risk.reasons.join(' · ')}</span>
-        <small>Informational demo alert; this transfer was not blocked.</small>
-      </div>}
-    </div>}</form>)
+    <label>Recipient identifier<select disabled={busy || Boolean(riskPrompt)} value={recipientType} onChange={(e) => { setRecipientType(e.target.value); setRecipient(null) }}>
+      <option value="account">Account number</option><option value="phone">Mobile phone number</option>
+    </select></label>
+    {recipientType === 'account'
+      ? <input required disabled={busy || Boolean(riskPrompt)} pattern="CB[0-9]{10}" placeholder="Recipient account number (CB...)" value={f.recipientAccount} onChange={(e) => { setF({ ...f, recipientAccount: e.target.value.toUpperCase() }); setRecipient(null) }} />
+      : <input required disabled={busy || Boolean(riskPrompt)} type="tel" inputMode="numeric" pattern="[6-9][0-9]{9}" maxLength="10" placeholder="10-digit mobile number" value={f.recipientPhone} onChange={(e) => { setF({ ...f, recipientPhone: e.target.value.replace(/\D/g, '').slice(0, 10) }); setRecipient(null) }} />}
+    <button type="button" className="btn alt" disabled={busy || Boolean(riskPrompt)} onClick={() => verifyRecipient().catch((error) => setMsg({ bad: error.message }))}>Verify recipient</button>
+    {recipient && <p className="ok" role="status">Paying {recipient.recipientName} · {recipient.accountNumberMasked}</p>}
+    <div className="row"><input required disabled={busy || Boolean(riskPrompt)} type="number" min="1" step="0.01" placeholder="Amount (₹)" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
+      <input disabled={busy || Boolean(riskPrompt)} placeholder="Note (optional)" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></div>
+    <button className="btn" disabled={busy || Boolean(riskPrompt)}>{busy ? 'Sending…' : 'Review and send'}</button>
+    {msg?.ok && <p className="ok" role="status">{msg.ok}</p>}
+    {msg?.bad && <p className="bad" role="alert">{msg.bad}</p>}
+    {msg?.warning && <p className="muted" role="status">No money has moved. Review the risk details and choose whether to proceed.</p>}
+    {msg?.blocked && <p className="ok" role="status">Payment blocked as requested. No money was moved; the decision was recorded for audit.</p>}
+    {riskPrompt && <section className={`risk-result ${riskPrompt.risk.level.toLowerCase()}`} aria-live="assertive">
+      <strong>{riskPrompt.risk.level} risk · score {riskPrompt.risk.score}/100</strong>
+      <ul>{riskPrompt.risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      <p>This payment is paused until you choose an action.</p>
+      <div className="row">
+        <button type="button" className="btn red" disabled={busy} onClick={() => decideRisk('BLOCK')}>{busy ? 'Processing…' : 'Block payment'}</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => decideRisk('ALLOW')}>{busy ? 'Processing…' : 'Allow payment'}</button>
+      </div>
+    </section>}
+  </form>)
 }
 
 function History({ txs }) {
@@ -279,14 +381,14 @@ function Admin() {
 }
 
 function Dashboard({ user }) {
-  const [tab, setTab] = useState('home'), [acc, setAcc] = useState(null), [txs, setTxs] = useState([]), [notes, setNotes] = useState([])
+  const [tab, setTab] = useState('home'), [acc, setAcc] = useState(null), [txs, setTxs] = useState([])
   const [stmts, setStmts] = useState([]), [orders, setOrders] = useState([]), [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState('')
   const load = useCallback(async () => {
     setLoadError('')
     try {
-      const [a, t, n, s, o] = await Promise.all([api('/account'), api('/transactions'), api('/notifications'), api('/statements'), api('/standing-orders')])
-      setAcc(a); setTxs(t); setNotes(n); setStmts(s); setOrders(o)
+      const [a, t, s, o] = await Promise.all([api('/account'), api('/transactions'), api('/statements'), api('/standing-orders')])
+      setAcc(a); setTxs(t); setStmts(s); setOrders(o)
     } catch (e) { setLoadError(e.message) }
     finally { setLoading(false) }
   }, [])
@@ -314,11 +416,10 @@ function Dashboard({ user }) {
     <main className="main dashboard-main">
       {loadError && <div className="bad dashboard-alert" role="alert"><span>{loadError}</span><button className="btn" onClick={load}>Try again</button></div>}
       {tab === 'home' && (acc ? <><section className="dashboard-heading"><div><span className="eyebrow">YOUR DASHBOARD</span><h1>Good to see you, {acc.ownerName}.</h1>
-        <p>Here’s a snapshot of your Cloud Bank account.</p></div><span className="account-status"><span />Account active</span></section>
+        <p>Here’s a snapshot of your Cloud Bank account.</p></div><span className="account-status"><span />{acc.accountStatus === 'ACTIVE' ? 'Account active' : 'Verification required'}</span></section>
         <div className="card balance-card"><div><div className="muted">AVAILABLE BALANCE</div><div className="bal">{inr(acc.balance)}</div>
           <div className="muted">Account number <b>{acc.accountNumber}</b></div></div><div className="balance-symbol" aria-hidden="true">₹</div></div>
-        <Transfer onDone={load} /><div className="row"><Money title="Deposit" path="/deposit" onDone={load} /><Money title="Withdraw" path="/withdraw" onDone={load} /></div>
-        <div className="card"><h3>Notifications</h3>{notes.map((n) => <p key={n.id}>🔔 {n.message} <span className="muted">· {when(n.createdAt)}</span></p>)}{!notes.length && <p className="muted">Nothing yet</p>}</div></>
+        {acc.accountStatus === 'ACTIVE' ? <Transfer onDone={load} /> : <KycForm onDone={load} />}</>
         : <section className="card dashboard-welcome"><span className="welcome-icon">C</span><h1>{loading ? 'Preparing your dashboard…' : 'Your account overview'}</h1>
           <p>{loading ? 'We’re securely loading your account details.' : 'We couldn’t load your account information just now. Check your connection and try again.'}</p>
           {!loading && <button className="btn" onClick={loadError.toLowerCase().includes('account not initialised') ? initializeAccount : load}>
